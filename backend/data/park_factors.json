@@ -1,0 +1,242 @@
+{
+  "Coors Field": {
+    "team": "COL",
+    "runs": 1.30,
+    "hr": 1.25,
+    "roof": "open",
+    "lat": 39.7561,
+    "lon": -104.9942
+  },
+  "Globe Life Field": {
+    "team": "TEX",
+    "runs": 1.05,
+    "hr": 1.10,
+    "roof": "retractable",
+    "lat": 32.7473,
+    "lon": -97.0845
+  },
+  "Great American Ball Park": {
+    "team": "CIN",
+    "runs": 1.12,
+    "hr": 1.18,
+    "roof": "open",
+    "lat": 39.0974,
+    "lon": -84.5065
+  },
+  "Fenway Park": {
+    "team": "BOS",
+    "runs": 1.08,
+    "hr": 1.05,
+    "roof": "open",
+    "lat": 42.3467,
+    "lon": -71.0972
+  },
+  "Yankee Stadium": {
+    "team": "NYY",
+    "runs": 1.06,
+    "hr": 1.15,
+    "roof": "open",
+    "lat": 40.8296,
+    "lon": -73.9262
+  },
+  "Wrigley Field": {
+    "team": "CHC",
+    "runs": 1.05,
+    "hr": 1.08,
+    "roof": "open",
+    "lat": 41.9484,
+    "lon": -87.6553
+  },
+  "Citizens Bank Park": {
+    "team": "PHI",
+    "runs": 1.05,
+    "hr": 1.10,
+    "roof": "open",
+    "lat": 39.9061,
+    "lon": -75.1665
+  },
+  "Guaranteed Rate Field": {
+    "team": "CWS",
+    "runs": 1.04,
+    "hr": 1.08,
+    "roof": "open",
+    "lat": 41.8299,
+    "lon": -87.6338
+  },
+  "Truist Park": {
+    "team": "ATL",
+    "runs": 1.02,
+    "hr": 1.03,
+    "roof": "open",
+    "lat": 33.8907,
+    "lon": -84.4677
+  },
+  "Rogers Centre": {
+    "team": "TOR",
+    "runs": 1.02,
+    "hr": 1.05,
+    "roof": "retractable",
+    "lat": 43.6414,
+    "lon": -79.3894
+  },
+  "Busch Stadium": {
+    "team": "STL",
+    "runs": 0.98,
+    "hr": 0.98,
+    "roof": "open",
+    "lat": 38.6226,
+    "lon": -90.1928
+  },
+  "Angel Stadium": {
+    "team": "LAA",
+    "runs": 0.97,
+    "hr": 0.97,
+    "roof": "open",
+    "lat": 33.8003,
+    "lon": -117.8827
+  },
+  "Target Field": {
+    "team": "MIN",
+    "runs": 1.00,
+    "hr": 1.00,
+    "roof": "open",
+    "lat": 44.9818,
+    "lon": -93.2775
+  },
+  "Nationals Park": {
+    "team": "WSH",
+    "runs": 1.00,
+    "hr": 1.02,
+    "roof": "open",
+    "lat": 38.8730,
+    "lon": -77.0074
+  },
+  "Progressive Field": {
+    "team": "CLE",
+    "runs": 0.98,
+    "hr": 0.98,
+    "roof": "open",
+    "lat": 41.4962,
+    "lon": -81.6852
+  },
+  "Kauffman Stadium": {
+    "team": "KC",
+    "runs": 0.97,
+    "hr": 0.92,
+    "roof": "open",
+    "lat": 39.0517,
+    "lon": -94.4803
+  },
+  "Comerica Park": {
+    "team": "DET",
+    "runs": 0.96,
+    "hr": 0.93,
+    "roof": "open",
+    "lat": 42.3390,
+    "lon": -83.0485
+  },
+  "Minute Maid Park": {
+    "team": "HOU",
+    "runs": 1.03,
+    "hr": 1.08,
+    "roof": "retractable",
+    "lat": 29.7573,
+    "lon": -95.3555
+  },
+  "Chase Field": {
+    "team": "ARI",
+    "runs": 1.05,
+    "hr": 1.06,
+    "roof": "retractable",
+    "lat": 33.4455,
+    "lon": -112.0667
+  },
+  "Dodger Stadium": {
+    "team": "LAD",
+    "runs": 0.97,
+    "hr": 0.98,
+    "roof": "open",
+    "lat": 34.0739,
+    "lon": -118.2400
+  },
+  "PNC Park": {
+    "team": "PIT",
+    "runs": 0.95,
+    "hr": 0.92,
+    "roof": "open",
+    "lat": 40.4469,
+    "lon": -80.0057
+  },
+  "loanDepot park": {
+    "team": "MIA",
+    "runs": 0.92,
+    "hr": 0.88,
+    "roof": "retractable",
+    "lat": 25.7781,
+    "lon": -80.2196
+  },
+  "Petco Park": {
+    "team": "SD",
+    "runs": 0.90,
+    "hr": 0.85,
+    "roof": "open",
+    "lat": 32.7076,
+    "lon": -117.1570
+  },
+  "T-Mobile Park": {
+    "team": "SEA",
+    "runs": 0.91,
+    "hr": 0.88,
+    "roof": "retractable",
+    "lat": 47.5914,
+    "lon": -122.3325
+  },
+  "Oracle Park": {
+    "team": "SF",
+    "runs": 0.87,
+    "hr": 0.82,
+    "roof": "open",
+    "lat": 37.7786,
+    "lon": -122.3893
+  },
+  "Tropicana Field": {
+    "team": "TB",
+    "runs": 0.94,
+    "hr": 0.91,
+    "roof": "dome",
+    "lat": 27.7682,
+    "lon": -82.6534
+  },
+  "Oakland Coliseum": {
+    "team": "OAK",
+    "runs": 0.93,
+    "hr": 0.88,
+    "roof": "open",
+    "lat": 37.7516,
+    "lon": -122.2005
+  },
+  "American Family Field": {
+    "team": "MIL",
+    "runs": 1.02,
+    "hr": 1.05,
+    "roof": "retractable",
+    "lat": 43.0280,
+    "lon": -87.9712
+  },
+  "Citi Field": {
+    "team": "NYM",
+    "runs": 0.95,
+    "hr": 0.93,
+    "roof": "open",
+    "lat": 40.7571,
+    "lon": -73.8458
+  },
+  "Oriole Park at Camden Yards": {
+    "team": "BAL",
+    "runs": 1.03,
+    "hr": 1.08,
+    "roof": "open",
+    "lat": 39.2838,
+    "lon": -76.6216
+  }
+}

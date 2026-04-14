@@ -1,0 +1,133 @@
+@import "tailwindcss";
+
+@theme {
+  --color-gray-925: #0d1117;
+  --color-gray-950: #090c10;
+}
+
+:root {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  background-color: #090c10;
+  color: #f3f4f6;
+  min-height: 100vh;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #111827;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #374151;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #4b5563;
+}
+
+/* Table styles */
+.data-table-container {
+  overflow-x: auto;
+  overflow-y: auto;
+}
+
+.data-table-container thead th {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+/* Input number spinner hide */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+/* Range slider dual thumb */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: #374151;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #3b82f6;
+  margin-top: -5px;
+  cursor: pointer;
+  border: 2px solid #1e3a5f;
+}
+
+input[type="range"]::-webkit-slider-thumb:hover {
+  background: #60a5fa;
+}
+
+/* Transition utility */
+.sidebar-transition {
+  transition: width 200ms ease-in-out;
+}
+
+/* Drag and drop zone */
+.drop-zone {
+  border: 2px dashed #374151;
+  transition: all 150ms ease;
+}
+
+.drop-zone:hover,
+.drop-zone.drag-over {
+  border-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.05);
+}
+
+/* Inline edit cell */
+.inline-edit-cell {
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: background 100ms ease;
+}
+
+.inline-edit-cell:hover {
+  background: rgba(59, 130, 246, 0.15);
+}
+
+/* Pulse animation for live indicators */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.pulse-dot {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
