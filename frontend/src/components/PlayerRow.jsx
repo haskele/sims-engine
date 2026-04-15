@@ -177,6 +177,54 @@ export default function PlayerRow({ player, onToggleLock, onToggleExclude, onUpd
         </span>
       </td>
 
+      {/* Min Exp */}
+      <td className="px-2 py-1.5 text-right">
+        {editing === 'minExp' ? (
+          <input
+            type="number"
+            value={editValue}
+            onChange={(e) => setEditValue(e.target.value)}
+            onBlur={handleSaveEdit}
+            onKeyDown={handleKeyDown}
+            className="w-12 bg-gray-800 border border-blue-500 rounded px-1 py-0.5 text-xs font-mono text-gray-100 text-right focus:outline-none"
+            autoFocus
+            min={0}
+            max={100}
+          />
+        ) : (
+          <span
+            className="inline-edit-cell text-xs font-mono text-gray-400"
+            onClick={() => handleStartEdit('minExp')}
+          >
+            {player.minExp ?? 0}
+          </span>
+        )}
+      </td>
+
+      {/* Max Exp */}
+      <td className="px-2 py-1.5 text-right">
+        {editing === 'maxExp' ? (
+          <input
+            type="number"
+            value={editValue}
+            onChange={(e) => setEditValue(e.target.value)}
+            onBlur={handleSaveEdit}
+            onKeyDown={handleKeyDown}
+            className="w-12 bg-gray-800 border border-blue-500 rounded px-1 py-0.5 text-xs font-mono text-gray-100 text-right focus:outline-none"
+            autoFocus
+            min={0}
+            max={100}
+          />
+        ) : (
+          <span
+            className="inline-edit-cell text-xs font-mono text-gray-400"
+            onClick={() => handleStartEdit('maxExp')}
+          >
+            {player.maxExp ?? 100}
+          </span>
+        )}
+      </td>
+
       {/* Status */}
       <td className="px-3 py-1.5 text-center">
         {player.confirmed ? (

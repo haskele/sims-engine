@@ -61,6 +61,8 @@ export default function Projections() {
           impliedTotal: p.implied_total,
           teamImplied: p.team_implied,
           temperature: p.temperature,
+          minExp: p.min_exposure ?? 0,
+          maxExp: p.max_exposure ?? 100,
           locked: false,
           excluded: false,
         }));
@@ -143,6 +145,8 @@ export default function Projections() {
     { key: 'ceiling', label: 'Ceiling', align: 'right', sortable: true },
     { key: 'ownership', label: 'Own%', align: 'right', sortable: true },
     { key: 'value', label: 'Value', align: 'right', sortable: true },
+    { key: 'minExp', label: 'Min%', align: 'right', sortable: true },
+    { key: 'maxExp', label: 'Max%', align: 'right', sortable: true },
     { key: 'confirmed', label: 'Status', align: 'center', sortable: true },
   ];
 

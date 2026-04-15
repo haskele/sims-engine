@@ -55,6 +55,31 @@ export const api = {
     return fetchApi(`/pipeline/run-daily?${params}`, { method: 'POST' });
   },
 
+  // Lineup Status & Game Lineups
+  getLineupStatus: (forceRefresh = false) => {
+    const params = forceRefresh ? '?force_refresh=true' : '';
+    return fetchApi(`/projections/lineups/status${params}`);
+  },
+  getGameLineups: (forceRefresh = false) => {
+    const params = forceRefresh ? '?force_refresh=true' : '';
+    return fetchApi(`/projections/lineups/games${params}`);
+  },
+
+  // DK Entries
+  uploadDkEntries: async (file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await fetch(`${BASE_URL}/dk-entries/upload`, { method: 'POST', body: formData });
+    if (!response.ok) throw new Error(`API Error: ${response.status}`);
+    return response.json();
+  },
+  getDkContests: () => fetchApi('/dk-entries/contests'),
+  getDkEntries: (contestId) => {
+    const params = contestId ? `?contest_id=${contestId}` : '';
+    return fetchApi(`/dk-entries/entries${params}`);
+  },
+  getDkEntriesStatus: () => fetchApi('/dk-entries/status'),
+
   // Health
   health: () => fetchApi('/health'),
 };

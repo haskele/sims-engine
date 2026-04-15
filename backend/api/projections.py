@@ -122,6 +122,9 @@ class SlateProjectionOut(BaseModel):
     implied_total: Optional[float] = None
     team_implied: Optional[float] = None
     temperature: Optional[float] = None
+    dk_id: Optional[int] = None
+    min_exposure: Optional[float] = None
+    max_exposure: Optional[float] = None
 
 
 # ── Slate-scoped endpoints (MUST be before /{projection_id} to avoid route conflict) ──
@@ -437,6 +440,26 @@ class LineupStatusOut(BaseModel):
     last_checked: Optional[str] = None
 
 
+class PlayerLineupOut(BaseModel):
+    name: str
+    position: str
+    batting_order: Optional[int] = None
+    handedness: str = ""
+
+
+class TeamLineupOut(BaseModel):
+    team: str
+    status: str
+    pitcher: Optional[PlayerLineupOut] = None
+    batters: List[PlayerLineupOut] = []
+
+
+class GameLineupOut(BaseModel):
+    away: TeamLineupOut
+    home: TeamLineupOut
+    game_time: str = ""
+
+
 @router.get("/lineups/status", response_model=List[LineupStatusOut])
 async def get_lineup_status(
     force_refresh: bool = Query(False, description="Force re-scrape"),
@@ -457,6 +480,49 @@ async def get_lineup_status(
                 batters=len(tl.batters),
                 last_checked=tl.last_checked,
             ))
+    return results
+
+
+@router.get("/lineups/games", response_model=List[GameLineupOut])
+async def get_game_lineups(
+    force_refresh: bool = Query(False, description="Force re-scrape"),
+):
+    """Get full lineup data for all games.
+
+    Returns complete game-by-game lineup info with pitcher names,
+    batting orders, positions, and handedness. Used by the GameCenter tab.
+    """
+    games = await fetch_lineups(force_refresh=force_refresh)
+    results = []
+    for game in games:
+        def _team_out(tl):
+            pitcher_out = None
+            if tl.pitcher:
+                pitcher_out = PlayerLineupOut(
+                    name=tl.pitcher.name,
+                    position="P",
+                    handedness=tl.pitcher.handedness,
+                )
+            batters_out = [
+                PlayerLineupOut(
+                    name=b.name,
+                    position=b.position,
+                    batting_order=b.batting_order,
+                    handedness=b.handedness,
+                )
+                for b in sorted(tl.batters, key=lambda x: x.batting_order or 99)
+            ]
+            return TeamLineupOut(
+                team=tl.team,
+                status=tl.status,
+                pitcher=pitcher_out,
+                batters=batters_out,
+            )
+        results.append(GameLineupOut(
+            away=_team_out(game.away),
+            home=_team_out(game.home),
+            game_time=game.game_time,
+        ))
     return results
 
 
@@ -507,4 +573,7 @@ def _sanitise_projection(p: Dict[str, Any]) -> Dict[str, Any]:
         "implied_total": p.get("implied_total"),
         "team_implied": p.get("team_implied"),
         "temperature": p.get("temperature"),
+        "dk_id": p.get("dk_id"),
+        "min_exposure": p.get("min_exposure"),
+        "max_exposure": p.get("max_exposure"),
     }

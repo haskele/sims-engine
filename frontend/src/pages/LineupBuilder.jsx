@@ -1,98 +1,51 @@
-import { useState } from 'react';
-import { Wrench, Download, RefreshCw, Zap } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Download, RefreshCw, Zap } from 'lucide-react';
 import LineupCard from '../components/LineupCard';
-import ExposureSlider from '../components/ExposureSlider';
 import StackControl from '../components/StackControl';
 import { formatSalary, formatDecimal, formatPct } from '../utils/formatting';
-
-const mockExposurePlayers = [
-  { name: 'Aaron Judge', min: 20, max: 80 },
-  { name: 'Shohei Ohtani', min: 15, max: 70 },
-  { name: 'Mookie Betts', min: 10, max: 60 },
-  { name: 'Gerrit Cole', min: 25, max: 85 },
-  { name: 'Zack Wheeler', min: 20, max: 75 },
-  { name: 'Trea Turner', min: 5, max: 50 },
-  { name: 'Corey Seager', min: 10, max: 55 },
-  { name: 'Rafael Devers', min: 5, max: 45 },
-  { name: 'Juan Soto', min: 10, max: 60 },
-  { name: 'Freddie Freeman', min: 15, max: 65 },
-];
-
-const stackTeams = ['LAD', 'NYY', 'ATL', 'PHI', 'TEX', 'BAL', 'MIN', 'MIL', 'CHC', 'CIN'];
-
-const mockLineups = [
-  { // $49,900
-    id: 1,
-    players: [
-      { name: 'Gerrit Cole', position: 'P', rosterPosition: 'P', team: 'NYY', salary: 10200, median: 21.8 },
-      { name: 'Zack Wheeler', position: 'P', rosterPosition: 'P', team: 'PHI', salary: 8600, median: 22.5 },
-      { name: 'J.T. Realmuto', position: 'C', rosterPosition: 'C', team: 'PHI', salary: 3600, median: 5.8 },
-      { name: 'Shohei Ohtani', position: '1B', rosterPosition: '1B', team: 'LAD', salary: 5800, median: 11.5 },
-      { name: 'Marcus Semien', position: '2B', rosterPosition: '2B', team: 'TEX', salary: 4200, median: 8.2 },
-      { name: 'Rafael Devers', position: '3B', rosterPosition: '3B', team: 'BOS', salary: 4800, median: 8.8 },
-      { name: 'Trea Turner', position: 'SS', rosterPosition: 'SS', team: 'PHI', salary: 4400, median: 9.1 },
-      { name: 'Aaron Judge', position: 'OF', rosterPosition: 'OF', team: 'NYY', salary: 4200, median: 10.8 },
-      { name: 'Christian Yelich', position: 'OF', rosterPosition: 'OF', team: 'MIL', salary: 2200, median: 7.5 },
-      { name: 'Jarren Duran', position: 'OF', rosterPosition: 'OF', team: 'BOS', salary: 2000, median: 6.2 },
-    ],
-  },
-  { // $49,800
-    id: 2,
-    players: [
-      { name: 'Tarik Skubal', position: 'P', rosterPosition: 'P', team: 'DET', salary: 9600, median: 21.0 },
-      { name: 'Corbin Burnes', position: 'P', rosterPosition: 'P', team: 'BAL', salary: 9000, median: 20.0 },
-      { name: 'Adley Rutschman', position: 'C', rosterPosition: 'C', team: 'BAL', salary: 3400, median: 6.2 },
-      { name: 'Bryce Harper', position: '1B', rosterPosition: '1B', team: 'PHI', salary: 5200, median: 9.2 },
-      { name: 'Ozzie Albies', position: '2B', rosterPosition: '2B', team: 'ATL', salary: 3800, median: 6.5 },
-      { name: 'Jose Ramirez', position: '3B', rosterPosition: '3B', team: 'CLE', salary: 4800, median: 8.5 },
-      { name: 'Gunnar Henderson', position: 'SS', rosterPosition: 'SS', team: 'BAL', salary: 4600, median: 8.8 },
-      { name: 'Ronald Acuna Jr.', position: 'OF', rosterPosition: 'OF', team: 'ATL', salary: 4400, median: 9.8 },
-      { name: 'Kyle Tucker', position: 'OF', rosterPosition: 'OF', team: 'HOU', salary: 3200, median: 8.6 },
-      { name: 'Ian Happ', position: 'OF', rosterPosition: 'OF', team: 'CHC', salary: 2000, median: 6.8 },
-    ],
-  },
-  { // $49,700
-    id: 3,
-    players: [
-      { name: 'Chris Sale', position: 'P', rosterPosition: 'P', team: 'ATL', salary: 9500, median: 19.8 },
-      { name: 'Logan Gilbert', position: 'P', rosterPosition: 'P', team: 'SEA', salary: 8000, median: 18.5 },
-      { name: 'Salvador Perez', position: 'C', rosterPosition: 'C', team: 'KC', salary: 3200, median: 5.5 },
-      { name: 'Matt Olson', position: '1B', rosterPosition: '1B', team: 'ATL', salary: 4800, median: 8.7 },
-      { name: 'Marcus Semien', position: '2B', rosterPosition: '2B', team: 'TEX', salary: 4200, median: 8.2 },
-      { name: 'Corey Seager', position: '3B', rosterPosition: '3B', team: 'TEX', salary: 5000, median: 8.9 },
-      { name: 'Bobby Witt Jr.', position: 'SS', rosterPosition: 'SS', team: 'KC', salary: 5200, median: 9.3 },
-      { name: 'Juan Soto', position: 'OF', rosterPosition: 'OF', team: 'NYM', salary: 5400, median: 9.6 },
-      { name: 'Yordan Alvarez', position: 'OF', rosterPosition: 'OF', team: 'HOU', salary: 2400, median: 9.0 },
-      { name: 'Julio Rodriguez', position: 'OF', rosterPosition: 'OF', team: 'SEA', salary: 2000, median: 7.8 },
-    ],
-  },
-  { // $49,900
-    id: 4,
-    players: [
-      { name: 'Yoshinobu Yamamoto', position: 'P', rosterPosition: 'P', team: 'LAD', salary: 9800, median: 20.5 },
-      { name: 'Framber Valdez', position: 'P', rosterPosition: 'P', team: 'HOU', salary: 7800, median: 17.0 },
-      { name: 'J.T. Realmuto', position: 'C', rosterPosition: 'C', team: 'PHI', salary: 3400, median: 5.8 },
-      { name: 'Freddie Freeman', position: '1B', rosterPosition: '1B', team: 'LAD', salary: 5200, median: 9.5 },
-      { name: 'Ozzie Albies', position: '2B', rosterPosition: '2B', team: 'ATL', salary: 3800, median: 6.5 },
-      { name: 'Rafael Devers', position: '3B', rosterPosition: '3B', team: 'BOS', salary: 4800, median: 8.8 },
-      { name: 'Elly De La Cruz', position: 'SS', rosterPosition: 'SS', team: 'CIN', salary: 4600, median: 7.5 },
-      { name: 'Mookie Betts', position: 'OF', rosterPosition: 'OF', team: 'LAD', salary: 5400, median: 10.2 },
-      { name: 'Adolis Garcia', position: 'OF', rosterPosition: 'OF', team: 'TEX', salary: 2200, median: 7.2 },
-      { name: 'Byron Buxton', position: 'OF', rosterPosition: 'OF', team: 'MIN', salary: 2900, median: 6.8 },
-    ],
-  },
-];
+import { api } from '../api/client';
 
 export default function LineupBuilder() {
   const [numLineups, setNumLineups] = useState(20);
   const [building, setBuilding] = useState(false);
-  const [lineups, setLineups] = useState(mockLineups);
-  const [showExposure, setShowExposure] = useState(true);
+  const [lineups, setLineups] = useState([]);
   const [showStacks, setShowStacks] = useState(false);
+  const [stackTeams, setStackTeams] = useState([]);
+  const [error, setError] = useState(null);
 
-  const handleBuild = () => {
+  const site = localStorage.getItem('dfs_site') || 'dk';
+
+  // Load teams from projections for stack controls
+  useEffect(() => {
+    api.getFeaturedProjections(site)
+      .then(data => {
+        const teams = [...new Set(data.map(p => p.team).filter(Boolean))].sort();
+        setStackTeams(teams);
+      })
+      .catch(() => {});
+  }, [site]);
+
+  const handleBuild = async () => {
     setBuilding(true);
-    setTimeout(() => setBuilding(false), 1500);
+    setError(null);
+    try {
+      // Get projections for the optimizer
+      const projections = await api.getFeaturedProjections(site);
+      if (!projections || projections.length === 0) {
+        setError('No projections available. Upload a projection CSV first.');
+        setBuilding(false);
+        return;
+      }
+
+      // Build lineups from projections using the CSV-based optimizer
+      // For now, generate diverse lineups client-side from the projection data
+      const generated = generateLineups(projections, numLineups);
+      setLineups(generated);
+    } catch (err) {
+      setError(err.message || 'Failed to build lineups');
+    } finally {
+      setBuilding(false);
+    }
   };
 
   const avgSalary = lineups.length > 0
@@ -129,22 +82,31 @@ export default function LineupBuilder() {
         <div className="rounded-lg border border-gray-800 bg-gray-900 p-4 space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-gray-300">Number of Lineups</span>
-            <span className="text-sm font-mono font-bold text-blue-400">{numLineups}</span>
+            <input
+              type="number"
+              value={numLineups}
+              onChange={(e) => setNumLineups(Math.max(1, Number(e.target.value)))}
+              className="w-20 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm font-mono font-bold text-blue-400 text-right focus:outline-none focus:border-blue-500"
+              min={1}
+            />
           </div>
           <input
             type="range"
             min={1}
-            max={150}
-            value={numLineups}
+            max={500}
+            value={Math.min(numLineups, 500)}
             onChange={(e) => setNumLineups(Number(e.target.value))}
             className="w-full"
           />
           <div className="flex justify-between text-[10px] text-gray-600 font-mono">
             <span>1</span>
-            <span>50</span>
             <span>100</span>
-            <span>150</span>
+            <span>250</span>
+            <span>500</span>
           </div>
+          <p className="text-[10px] text-gray-600">
+            Or type any number above for larger pools
+          </p>
         </div>
 
         {/* Build button */}
@@ -166,29 +128,11 @@ export default function LineupBuilder() {
           )}
         </button>
 
-        {/* Player Exposure */}
-        <div className="rounded-lg border border-gray-800 bg-gray-900 overflow-hidden">
-          <button
-            onClick={() => setShowExposure(!showExposure)}
-            className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-gray-800/40 transition-colors"
-          >
-            <span className="text-xs font-semibold text-gray-300">Player Exposure</span>
-            <span className="text-[10px] text-gray-500">{showExposure ? 'Hide' : 'Show'}</span>
-          </button>
-          {showExposure && (
-            <div className="px-4 pb-3 space-y-1 border-t border-gray-800 pt-2">
-              {mockExposurePlayers.map((p) => (
-                <ExposureSlider
-                  key={p.name}
-                  playerName={p.name}
-                  min={p.min}
-                  max={p.max}
-                  onChange={() => {}}
-                />
-              ))}
-            </div>
-          )}
-        </div>
+        {error && (
+          <div className="rounded-lg border border-red-800 bg-red-900/20 px-3 py-2 text-xs text-red-400">
+            {error}
+          </div>
+        )}
 
         {/* Team Stacks */}
         <div className="rounded-lg border border-gray-800 bg-gray-900 overflow-hidden">
@@ -216,20 +160,32 @@ export default function LineupBuilder() {
             <h2 className="text-sm font-semibold text-gray-300">
               Generated Lineups ({lineups.length})
             </h2>
-            <div className="flex items-center gap-3">
-              <div className="text-xs text-gray-500">
-                Avg Salary: <span className="font-mono text-gray-300">{formatSalary(Math.round(avgSalary))}</span>
+            {lineups.length > 0 && (
+              <div className="flex items-center gap-3">
+                <div className="text-xs text-gray-500">
+                  Avg Salary: <span className="font-mono text-gray-300">{formatSalary(Math.round(avgSalary))}</span>
+                </div>
+                <div className="text-xs text-gray-500">
+                  Avg Proj: <span className="font-mono text-emerald-400">{formatDecimal(avgProj)}</span>
+                </div>
               </div>
-              <div className="text-xs text-gray-500">
-                Avg Proj: <span className="font-mono text-emerald-400">{formatDecimal(avgProj)}</span>
-              </div>
-            </div>
+            )}
           </div>
-          <button className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-gray-700 bg-gray-800 text-xs text-gray-300 hover:bg-gray-700 transition-colors">
-            <Download className="w-3.5 h-3.5" />
-            Export CSV
-          </button>
+          {lineups.length > 0 && (
+            <button className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-gray-700 bg-gray-800 text-xs text-gray-300 hover:bg-gray-700 transition-colors">
+              <Download className="w-3.5 h-3.5" />
+              Export CSV
+            </button>
+          )}
         </div>
+
+        {lineups.length === 0 && !building && (
+          <div className="text-center py-20 text-gray-600">
+            <Zap className="w-10 h-10 mx-auto mb-3 opacity-30" />
+            <p className="text-sm">Click "Build Lineups" to generate optimized lineups</p>
+            <p className="text-xs mt-1">Set exposure limits on the Projections tab</p>
+          </div>
+        )}
 
         {/* Exposure breakdown */}
         {exposureList.length > 0 && (
@@ -265,4 +221,88 @@ export default function LineupBuilder() {
       </div>
     </div>
   );
+}
+
+
+/**
+ * Generate diverse lineups from projection data using a greedy approach.
+ * This is a client-side fallback — the real optimizer runs server-side with PuLP.
+ */
+function generateLineups(projections, count) {
+  const SALARY_CAP = 50000;
+  const SLOTS = ['P', 'P', 'C', '1B', '2B', '3B', 'SS', 'OF', 'OF', 'OF'];
+
+  // Group players by position
+  const byPos = {};
+  for (const p of projections) {
+    const pos = p.is_pitcher ? 'P' : p.position;
+    const positions = pos.includes('/') ? pos.split('/') : [pos];
+    for (const pp of positions) {
+      const key = ['LF', 'CF', 'RF'].includes(pp) ? 'OF' : pp;
+      if (!byPos[key]) byPos[key] = [];
+      byPos[key].push(p);
+    }
+  }
+
+  // Sort each position pool by median descending
+  for (const pos of Object.keys(byPos)) {
+    byPos[pos].sort((a, b) => b.median_pts - a.median_pts);
+  }
+
+  const lineups = [];
+  const usedCombos = new Set();
+
+  for (let n = 0; n < count; n++) {
+    const lineup = [];
+    const usedNames = new Set();
+    let totalSalary = 0;
+    let valid = true;
+
+    for (const slot of SLOTS) {
+      const pool = byPos[slot] || [];
+      // Add randomness for diversity
+      const jitter = n * 7 + lineup.length * 13;
+      let found = false;
+
+      for (let attempt = 0; attempt < pool.length; attempt++) {
+        const idx = (attempt + jitter) % pool.length;
+        const p = pool[idx];
+        if (usedNames.has(p.player_name)) continue;
+        if (totalSalary + (p.salary || 0) > SALARY_CAP) continue;
+
+        const rosterPos = slot === 'P' ? 'P' : slot;
+        lineup.push({
+          name: p.player_name,
+          position: p.position || slot,
+          rosterPosition: rosterPos,
+          team: p.team,
+          salary: p.salary || 0,
+          median: p.median_pts,
+          dk_id: p.dk_id,
+        });
+        usedNames.add(p.player_name);
+        totalSalary += p.salary || 0;
+        found = true;
+        break;
+      }
+
+      if (!found) {
+        valid = false;
+        break;
+      }
+    }
+
+    if (valid && lineup.length === 10) {
+      const key = lineup.map(p => p.name).sort().join(',');
+      if (!usedCombos.has(key)) {
+        usedCombos.add(key);
+        lineups.push({
+          id: n + 1,
+          players: lineup,
+        });
+      }
+    }
+  }
+
+  return lineups;
 }
