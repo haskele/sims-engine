@@ -147,6 +147,10 @@ def load_csv_projections(
     """Load projections from a SaberSim CSV export.
 
     Maps CSV columns to the SlateProjectionOut-compatible format.
+    Filters out:
+      - Players with median projection < 0.25
+      - Non-starting pitchers (relievers with projected IP < 3)
+      - Players on the IL or marked Out
     """
     projections: List[Dict[str, Any]] = []
     try:
@@ -154,8 +158,25 @@ def load_csv_projections(
             reader = csv.DictReader(f)
             for row in reader:
                 proj = _parse_csv_row(row, site)
-                if proj:
-                    projections.append(proj)
+                if not proj:
+                    continue
+
+                # Filter: median >= 0.25
+                if proj["median_pts"] < 0.25:
+                    continue
+
+                # Filter: skip IL and Out players
+                status = row.get("Status", "").strip().upper()
+                if status in ("IL", "O"):
+                    continue
+
+                # Filter: non-starting pitchers (relievers)
+                if proj["is_pitcher"]:
+                    ip = _safe_float(row.get("IP"), 0.0)
+                    if ip is not None and ip < 3.0:
+                        continue
+
+                projections.append(proj)
     except Exception as exc:
         logger.error("Failed to load CSV projections from %s: %s", csv_path, exc)
 
@@ -177,6 +198,7 @@ def _parse_csv_row(row: Dict[str, str], site: str) -> Optional[Dict[str, Any]]:
     dfs_id = _safe_int(row.get("DFS ID"))
 
     is_pitcher = pos in ("P", "SP", "RP")
+    ip = _safe_float(row.get("IP"))  # used for starter detection
 
     # Projection points
     median_pts = _safe_float(row.get("dk_points")) or _safe_float(row.get("My Proj")) or 0.0
@@ -205,7 +227,6 @@ def _parse_csv_row(row: Dict[str, str], site: str) -> Optional[Dict[str, Any]]:
     season_ops = None
 
     if is_pitcher:
-        ip = _safe_float(row.get("IP"))
         er = _safe_float(row.get("ER"))
         k = _safe_float(row.get("K"))
         if ip and ip > 0:
@@ -237,7 +258,7 @@ def _parse_csv_row(row: Dict[str, str], site: str) -> Optional[Dict[str, Any]]:
         "salary": salary,
         "batting_order": order,
         "is_pitcher": is_pitcher,
-        "is_confirmed": order is not None if not is_pitcher else True,
+        "is_confirmed": (order is not None) if not is_pitcher else (ip is not None and ip >= 3.0),
         "floor_pts": floor_pts,
         "median_pts": median_pts,
         "ceiling_pts": ceiling_pts,

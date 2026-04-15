@@ -18,6 +18,11 @@ from services.csv_projections import (
     list_available_slates as list_csv_slates,
     load_csv_projections,
 )
+from services.lineup_scraper import (
+    apply_lineup_status,
+    build_lineup_lookup,
+    fetch_lineups,
+)
 from services.projections import build_player_projection
 from services.slate_manager import fetch_dk_slates, identify_featured_slate
 
@@ -193,6 +198,7 @@ async def get_featured_slate_projections(
         featured = identify_featured_csv_slate(csv_slates)
         if featured and featured.get("csv_path"):
             projections = load_csv_projections(featured["csv_path"], site)
+            projections = await _overlay_lineup_status(projections)
             return [
                 SlateProjectionOut(**_sanitise_projection(p))
                 for p in projections
@@ -229,6 +235,7 @@ async def get_slate_projections(
     for cs in csv_slates:
         if cs["slate_id"] == slate_id and cs.get("csv_path"):
             projections = load_csv_projections(cs["csv_path"], site)
+            projections = await _overlay_lineup_status(projections)
             return [
                 SlateProjectionOut(**_sanitise_projection(p))
                 for p in projections
@@ -419,7 +426,59 @@ async def generate_projections(
 
 
 
+# ── Lineup status endpoints ────────────────────────────────────────────────
+
+
+class LineupStatusOut(BaseModel):
+    team: str
+    status: str  # confirmed / expected / unknown
+    pitcher: Optional[str] = None
+    batters: int = 0
+    last_checked: Optional[str] = None
+
+
+@router.get("/lineups/status", response_model=List[LineupStatusOut])
+async def get_lineup_status(
+    force_refresh: bool = Query(False, description="Force re-scrape"),
+):
+    """Get current lineup confirmation status for all teams.
+
+    Scrapes Baseball Monster (primary) / RotOwire (fallback) for the latest
+    lineup data. Results are cached for 90 seconds unless force_refresh=True.
+    """
+    games = await fetch_lineups(force_refresh=force_refresh)
+    results = []
+    for game in games:
+        for tl in (game.away, game.home):
+            results.append(LineupStatusOut(
+                team=tl.team,
+                status=tl.status,
+                pitcher=tl.pitcher.name if tl.pitcher else None,
+                batters=len(tl.batters),
+                last_checked=tl.last_checked,
+            ))
+    return results
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────
+
+
+async def _overlay_lineup_status(
+    projections: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Fetch latest lineup data and overlay it onto projections.
+
+    This runs on every projection request (with caching) so that lineup
+    changes, scratches, and pitcher swaps are always reflected.
+    """
+    try:
+        games = await fetch_lineups()
+        if games:
+            lookup = build_lineup_lookup(games)
+            projections = apply_lineup_status(projections, lookup)
+    except Exception as exc:
+        logger.warning("Lineup overlay failed (continuing with CSV status): %s", exc)
+    return projections
 
 
 def _sanitise_projection(p: Dict[str, Any]) -> Dict[str, Any]:
