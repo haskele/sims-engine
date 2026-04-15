@@ -1,4 +1,6 @@
-const BASE_URL = '/api';
+const BASE_URL = import.meta.env.PROD
+  ? 'https://baseball-dfs-sims.fly.dev'
+  : '/api';
 
 async function fetchApi(endpoint, options = {}) {
   const response = await fetch(`${BASE_URL}${endpoint}`, {
