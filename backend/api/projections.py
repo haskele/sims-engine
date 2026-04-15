@@ -13,6 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_db
 from models.player import Player
 from models.projection import Projection
+from services.csv_projections import (
+    identify_featured_csv_slate,
+    list_available_slates as list_csv_slates,
+    load_csv_projections,
+)
 from services.projections import build_player_projection
 from services.slate_manager import fetch_dk_slates, identify_featured_slate
 
@@ -122,12 +127,33 @@ async def list_slates(
     site: str = Query("dk", pattern="^(dk|fd)$"),
     target_date: str = Query(None, description="YYYY-MM-DD, defaults to today"),
 ):
-    """List available DFS slates for a given date and site."""
+    """List available DFS slates for a given date and site.
+
+    Prioritises CSV-based slates (uploaded projection files) and falls
+    back to the DK lobby API.
+    """
     try:
         d = date.fromisoformat(target_date) if target_date else date.today()
     except ValueError:
         raise HTTPException(400, "Invalid date, use YYYY-MM-DD")
 
+    # Check for CSV-based slates first
+    csv_slates = list_csv_slates(target_date=d, site=site)
+    if csv_slates:
+        return [
+            SlateOut(
+                slate_id=s["slate_id"],
+                site=s["site"],
+                name=s["name"],
+                game_count=s["game_count"],
+                start_time=s.get("start_time"),
+                game_type=s["game_type"],
+                draft_group_id=s.get("draft_group_id", 0),
+            )
+            for s in csv_slates
+        ]
+
+    # Fallback to DK API
     if site == "dk":
         slates = await fetch_dk_slates(target_date=d)
     else:
@@ -152,12 +178,30 @@ async def get_featured_slate_projections(
     site: str = Query("dk", pattern="^(dk|fd)$"),
     target_date: str = Query(None, description="YYYY-MM-DD"),
 ):
-    """Get projections for the featured/main slate."""
-    from services.daily_pipeline import run_daily_pipeline
+    """Get projections for the featured/main slate.
 
+    Uses CSV projections when available, falls back to the pipeline.
+    """
+    try:
+        d = date.fromisoformat(target_date) if target_date else date.today()
+    except ValueError:
+        raise HTTPException(400, "Invalid date, use YYYY-MM-DD")
+
+    # Try CSV-based projections first
+    csv_slates = list_csv_slates(target_date=d, site=site)
+    if csv_slates:
+        featured = identify_featured_csv_slate(csv_slates)
+        if featured and featured.get("csv_path"):
+            projections = load_csv_projections(featured["csv_path"], site)
+            return [
+                SlateProjectionOut(**_sanitise_projection(p))
+                for p in projections
+            ]
+
+    # Fallback to pipeline
+    from services.daily_pipeline import run_daily_pipeline
     d_str = target_date or date.today().isoformat()
     result = await run_daily_pipeline(d_str, site)
-
     projections = result.get("projections", [])
     return [
         SlateProjectionOut(**_sanitise_projection(p))
@@ -171,12 +215,29 @@ async def get_slate_projections(
     site: str = Query("dk", pattern="^(dk|fd)$"),
     target_date: str = Query(None, description="YYYY-MM-DD"),
 ):
-    """Get projections scoped to a specific slate."""
-    from services.daily_pipeline import run_daily_pipeline
+    """Get projections scoped to a specific slate.
 
+    Uses CSV projections when the slate_id matches a CSV filename.
+    """
+    try:
+        d = date.fromisoformat(target_date) if target_date else date.today()
+    except ValueError:
+        raise HTTPException(400, "Invalid date, use YYYY-MM-DD")
+
+    # Check if this slate_id matches a CSV file
+    csv_slates = list_csv_slates(target_date=d, site=site)
+    for cs in csv_slates:
+        if cs["slate_id"] == slate_id and cs.get("csv_path"):
+            projections = load_csv_projections(cs["csv_path"], site)
+            return [
+                SlateProjectionOut(**_sanitise_projection(p))
+                for p in projections
+            ]
+
+    # Fallback to pipeline
+    from services.daily_pipeline import run_daily_pipeline
     d_str = target_date or date.today().isoformat()
     result = await run_daily_pipeline(d_str, site)
-
     projections = result.get("projections", [])
     return [
         SlateProjectionOut(**_sanitise_projection(p))
