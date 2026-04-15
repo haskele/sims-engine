@@ -210,17 +210,17 @@ function PitcherCard({ pitcher, side }) {
 }
 
 function LineupTable({ lineup, teamAbbr }) {
-  const confirmedCount = lineup.filter(p => p.confirmed).length;
+  const isConfirmed = lineup.every(p => p.confirmed);
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
         <span className="text-xs font-semibold text-gray-400">{teamAbbr} Lineup</span>
         <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
-          confirmedCount === 9
+          isConfirmed
             ? 'bg-emerald-500/10 text-emerald-400'
             : 'bg-amber-500/10 text-amber-400'
         }`}>
-          {confirmedCount}/9 Confirmed
+          {isConfirmed ? 'Confirmed' : 'Projected'}
         </span>
       </div>
       <div className="space-y-0">

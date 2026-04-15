@@ -128,13 +128,25 @@ async def fetch_dk_slates(target_date: Optional[date] = None) -> List[Dict[str, 
         games_in_slate: List[Dict[str, Any]] = []
         game_count = dg.get("GameCount", 0)
 
-        # Determine game type
+        # Determine game type and skip non-classic/non-showdown slates
         game_type_id = dg.get("GameTypeId", 1)
         game_type = "classic"
         dg_name = dg.get("ContestStartTimeSuffix", "") or dg.get("DraftGroupTag", "") or ""
-        # Showdown = single game
-        if game_type_id in (96,) or "showdown" in dg_name.lower():
+        dg_name_lower = dg_name.lower()
+        # Showdown / Captain mode (GameTypeId 114 for single-game)
+        if game_type_id == 114 or "showdown" in dg_name_lower or "captain" in dg_name_lower:
             game_type = "showdown"
+        # Skip non-classic/non-showdown types:
+        #   45 = Tiers, 178/179 = Snake, 346 = Home Runs, etc.
+        # Also filter by name patterns
+        non_classic_patterns = ("pick", "snake", "tier", "best ball", "bestball", "arcade", "flash", "home run")
+        if any(p in dg_name_lower for p in non_classic_patterns):
+            logger.debug("Skipping non-classic slate: %s (name=%s)", dg_id, dg_name)
+            continue
+        # GameTypeId 2 = Classic, 114 = Showdown; skip all others
+        if game_type_id not in (2, 114):
+            logger.debug("Skipping slate with GameTypeId=%s: %s", game_type_id, dg_name)
+            continue
 
         # Build a readable name
         name_parts = []
@@ -293,11 +305,11 @@ DK_TO_MLB_TEAM: Dict[str, str] = {
     "MIN": "MIN",
     "NYM": "NYM",
     "NYY": "NYY",
-    "OAK": "OAK",
+    "OAK": "OAK", "A'S": "OAK",
     "PHI": "PHI",
     "PIT": "PIT",
     "SD": "SD",
-    "SF": "SF",
+    "SF": "SF", "SFG": "SF",
     "SEA": "SEA",
     "STL": "STL",
     "TB": "TB",

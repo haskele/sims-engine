@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+import re
+from typing import Any, Dict, List, Optional
 
 import httpx
 
@@ -22,11 +23,11 @@ _HEADERS = {
 MLB_LEAGUE_ID = 84240
 
 
-async def get_mlb_odds() -> dict[str, Any]:
+async def get_mlb_odds() -> Dict[str, Any]:
     """Fetch current MLB odds from DraftKings Sportsbook.
 
-    Returns the raw JSON which contains events with markets (moneyline,
-    run total, run line, etc.).
+    Returns the raw JSON which contains events, markets, and selections
+    at the top level.
     """
     async with httpx.AsyncClient(headers=_HEADERS, timeout=30) as client:
         resp = await client.get(settings.dk_sportsbook_url)
@@ -36,24 +37,48 @@ async def get_mlb_odds() -> dict[str, Any]:
     return data
 
 
-def parse_odds(raw: dict[str, Any]) -> list[dict[str, Any]]:
+def parse_odds(raw: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Parse DK sportsbook response into per-game odds dicts.
+
+    The DK sportsbook API returns a flat structure with:
+    - events: list of games with participants
+    - markets: list of betting markets (Moneyline, Total, Run Line) linked by eventId
+    - selections: list of outcomes linked by marketId
 
     Returns a list of dicts with keys:
       - event_id, event_name
-      - home_team, away_team
+      - home_team, away_team, home_abbr, away_abbr
       - home_ml, away_ml
       - total (over/under run total)
-      - home_implied, away_implied  (derived from total + ML)
+      - home_implied, away_implied (derived from total + ML)
     """
-    games: list[dict[str, Any]] = []
     events = raw.get("events", [])
+    markets = raw.get("markets", [])
+    selections = raw.get("selections", [])
+
+    # Index markets by eventId
+    markets_by_event: Dict[str, List[Dict[str, Any]]] = {}
+    for m in markets:
+        eid = str(m.get("eventId", ""))
+        markets_by_event.setdefault(eid, []).append(m)
+
+    # Index selections by marketId
+    selections_by_market: Dict[str, List[Dict[str, Any]]] = {}
+    for s in selections:
+        mid = s.get("marketId", "")
+        selections_by_market.setdefault(mid, []).append(s)
+
+    games: List[Dict[str, Any]] = []
+
     for event in events:
-        game: dict[str, Any] = {
-            "event_id": event.get("eventId"),
+        event_id = str(event.get("id", ""))
+        game: Dict[str, Any] = {
+            "event_id": event_id,
             "event_name": event.get("name", ""),
             "home_team": None,
             "away_team": None,
+            "home_abbr": None,
+            "away_abbr": None,
             "home_ml": None,
             "away_ml": None,
             "total": None,
@@ -61,46 +86,47 @@ def parse_odds(raw: dict[str, Any]) -> list[dict[str, Any]]:
             "away_implied": None,
         }
 
-        # Parse team names from event name (format: "Away @ Home")
-        name = event.get("name", "")
-        if " @ " in name:
-            parts = name.split(" @ ", 1)
-            game["away_team"] = parts[0].strip()
-            game["home_team"] = parts[1].strip()
+        # Extract team names and abbreviations from participants
+        for p in event.get("participants", []):
+            role = (p.get("venueRole") or "").lower()
+            meta = p.get("metadata", {})
+            short = meta.get("shortName", "")
+            full_name = p.get("name", "")
+            if role == "home":
+                game["home_team"] = full_name
+                game["home_abbr"] = short
+            elif role == "away":
+                game["away_team"] = full_name
+                game["away_abbr"] = short
 
-        # Walk through offer categories -> offers -> outcomes
-        for cat in event.get("offerCategories", []):
-            cat_name = (cat.get("name") or "").lower()
-            for sub in cat.get("offerSubcategoryDescriptors", []):
-                for offer in sub.get("offerSubcategory", {}).get("offers", []):
-                    for market in offer:
-                        label = (market.get("label") or "").lower()
-                        outcomes = market.get("outcomes", [])
+        # Parse markets for this event
+        event_markets = markets_by_event.get(event_id, [])
+        for market in event_markets:
+            market_name = (market.get("name") or "").lower()
+            market_id = market.get("id", "")
+            market_sels = selections_by_market.get(market_id, [])
 
-                        if "moneyline" in label:
-                            for o in outcomes:
-                                odds = o.get("oddsAmerican")
-                                participant = (o.get("label") or "").lower()
-                                if odds is not None:
-                                    try:
-                                        odds_int = int(odds.replace("+", ""))
-                                    except (ValueError, AttributeError):
-                                        continue
-                                    # Match to home/away
-                                    if game["home_team"] and game["home_team"].lower() in participant:
-                                        game["home_ml"] = odds_int
-                                    elif game["away_team"] and game["away_team"].lower() in participant:
-                                        game["away_ml"] = odds_int
+            if "moneyline" in market_name:
+                for sel in market_sels:
+                    outcome_type = (sel.get("outcomeType") or "").lower()
+                    odds_str = (sel.get("displayOdds") or {}).get("american", "")
+                    odds_val = _parse_american_odds(odds_str)
+                    if odds_val is not None:
+                        if outcome_type == "home":
+                            game["home_ml"] = odds_val
+                        elif outcome_type == "away":
+                            game["away_ml"] = odds_val
 
-                        elif "total" in label and "run" in label:
-                            for o in outcomes:
-                                if (o.get("label") or "").lower() == "over":
-                                    line = o.get("line")
-                                    if line is not None:
-                                        try:
-                                            game["total"] = float(line)
-                                        except (ValueError, TypeError):
-                                            pass
+            elif market_name == "total":
+                for sel in market_sels:
+                    outcome_type = (sel.get("outcomeType") or "").lower()
+                    if outcome_type == "over":
+                        pts = sel.get("points")
+                        if pts is not None:
+                            try:
+                                game["total"] = float(pts)
+                            except (ValueError, TypeError):
+                                pass
 
         # Derive implied run totals from total + moneyline
         if game["total"] and game["home_ml"] is not None and game["away_ml"] is not None:
@@ -119,6 +145,18 @@ def parse_odds(raw: dict[str, Any]) -> list[dict[str, Any]]:
 
     logger.info("Parsed %d MLB game odds", len(games))
     return games
+
+
+def _parse_american_odds(odds_str: str) -> Optional[int]:
+    """Parse American odds string that may use Unicode minus sign."""
+    if not odds_str:
+        return None
+    # Normalise Unicode minus (U+2212) and en-dash (U+2013) to ASCII hyphen
+    cleaned = odds_str.replace("\u2212", "-").replace("\u2013", "-").replace("+", "")
+    try:
+        return int(cleaned)
+    except (ValueError, TypeError):
+        return None
 
 
 def _ml_to_prob(ml: int) -> float:

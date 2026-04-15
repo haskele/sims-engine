@@ -194,8 +194,14 @@ async def run_daily_pipeline(
     try:
         raw_odds = await vegas.get_mlb_odds()
         parsed_odds = vegas.parse_odds(raw_odds)
-        # Index by home team name for matching
+        # Index by home team abbreviation (preferred) and full name
         for od in parsed_odds:
+            home_abbr = od.get("home_abbr", "")
+            if home_abbr:
+                # Normalise sportsbook abbreviations to MLB standard
+                normalised = normalise_dk_team(home_abbr)
+                odds_by_game[normalised] = od
+                odds_by_game[home_abbr.upper()] = od
             home = od.get("home_team", "")
             if home:
                 odds_by_game[home.lower()] = od
@@ -772,9 +778,11 @@ def _match_odds_to_game(
     away_abbr: str,
 ) -> Optional[Dict[str, Any]]:
     """Match Vegas odds to a game by team abbreviation."""
-    # Try direct match first
+    # Direct abbreviation match (new sportsbook API provides abbreviations)
+    if home_abbr.upper() in odds_by_home:
+        return odds_by_home[home_abbr.upper()]
+    # Fallback: try full name matching
     for key, odds in odds_by_home.items():
-        # Resolve team names
         home_match = _name_matches_abbr(key, home_abbr)
         if home_match:
             return odds
