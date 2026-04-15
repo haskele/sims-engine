@@ -17,9 +17,9 @@ logger = logging.getLogger(__name__)
 
 # Search paths for CSV files
 _CSV_DIRS = [
-    Path(__file__).resolve().parent.parent.parent / "projections by slate - dk",
-    Path("/app/projections by slate - dk"),
-    Path(__file__).resolve().parent.parent / "data" / "projections",
+    Path(__file__).resolve().parent.parent / "projections",          # backend/projections (Docker /app/projections)
+    Path(__file__).resolve().parent.parent.parent / "projections by slate - dk",  # local dev
+    Path("/app/data/projections"),                                    # Fly.io volume
 ]
 
 
