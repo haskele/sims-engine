@@ -67,19 +67,33 @@ def _parse_filename(filename: str) -> Optional[Dict[str, str]]:
     }
 
 
+def _slate_base_key(info: Dict[str, str]) -> str:
+    """Extract a dedup key from parsed filename info, stripping v2/copy suffixes."""
+    raw = info["slate_type"]
+    base = re.sub(r"\s*\(\d+\)", "", raw)    # strip "(1)" copy markers
+    base = re.sub(r"\s*v\d+$", "", base, flags=re.IGNORECASE)  # strip "v2"
+    return f"{info['date']}_{info['time']}_{info['site']}_{base.strip()}"
+
+
+def _is_v2(info: Dict[str, str]) -> bool:
+    """Check if a parsed filename represents a v2/updated file."""
+    return bool(re.search(r"v\d+", info["slate_type"], re.IGNORECASE))
+
+
 def list_available_slates(
     target_date: Optional[date] = None,
     site: str = "dk",
 ) -> List[Dict[str, Any]]:
     """List available CSV-based slates for a given date.
 
-    Returns a list of slate dicts compatible with the API schema.
+    When both a base file and a v2 exist for the same slate, only the v2 is returned.
     """
     csv_dir = _find_csv_dir()
     if not csv_dir:
         return []
 
-    slates: List[Dict[str, Any]] = []
+    # First pass: collect all candidates, keyed by base identity
+    candidates: Dict[str, List[Tuple[Path, Dict[str, str]]]] = {}
     for csv_file in sorted(csv_dir.glob("*.csv")):
         info = _parse_filename(csv_file.name)
         if not info:
@@ -88,11 +102,18 @@ def list_available_slates(
             continue
         if target_date and info["date"] != target_date.isoformat():
             continue
+        key = _slate_base_key(info)
+        candidates.setdefault(key, []).append((csv_file, info))
 
-        # Count unique teams to estimate game count
+    # Second pass: for each key, pick v2 over base
+    slates: List[Dict[str, Any]] = []
+    for key, entries in candidates.items():
+        v2_entries = [(f, i) for f, i in entries if _is_v2(i)]
+        chosen_file, chosen_info = v2_entries[-1] if v2_entries else entries[-1]
+
         teams = set()
         try:
-            with open(csv_file, "r", encoding="utf-8-sig") as f:
+            with open(chosen_file, "r", encoding="utf-8-sig") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
                     team = row.get("Team", "").strip()
@@ -102,23 +123,26 @@ def list_available_slates(
             pass
         game_count = len(teams) // 2
 
-        # Determine game type
-        slate_type_lower = info["slate_type"].lower()
+        slate_type_lower = chosen_info["slate_type"].lower()
         game_type = "classic"
         if "showdown" in slate_type_lower or "captain" in slate_type_lower:
             game_type = "showdown"
 
-        slate_id = csv_file.stem  # filename without extension
+        # Use clean display name (strip v2/copy suffixes)
+        display_type = re.sub(r"\s*\(\d+\)", "", chosen_info["slate_type"])
+        display_type = re.sub(r"\s*v\d+$", "", display_type, flags=re.IGNORECASE).strip()
+
+        slate_id = chosen_file.stem
         slates.append({
             "slate_id": slate_id,
             "site": site,
             "draft_group_id": 0,
-            "name": f"{info['slate_type']} ({info['time']})",
+            "name": f"{display_type} ({chosen_info['time']})",
             "game_count": game_count,
-            "start_time": f"{info['date']}T{info['time']}",
+            "start_time": f"{chosen_info['date']}T{chosen_info['time']}",
             "game_type": game_type,
             "games": [],
-            "csv_path": str(csv_file),
+            "csv_path": str(chosen_file),
         })
 
     return slates
