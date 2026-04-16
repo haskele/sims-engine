@@ -19,6 +19,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+import httpx
+
 logger = logging.getLogger(__name__)
 
 # DK Classic MLB roster slots (in order)
@@ -54,9 +56,17 @@ class DKContestInfo:
     """Aggregated contest info from entries."""
     contest_id: str
     contest_name: str
-    entry_fee: str
-    entry_count: int
-    entry_ids: List[str]
+    entry_fee: str           # raw string from CSV, e.g. "$15.00"
+    entry_fee_numeric: float = 0.0  # parsed numeric value
+    entry_count: int = 0
+    entry_ids: List[str] = field(default_factory=list)
+    # Enriched from DK API (populated after CSV parse)
+    field_size: Optional[int] = None
+    max_entries_per_user: Optional[int] = None
+    prize_pool: Optional[float] = None
+    payout_structure: Optional[List[Dict[str, Any]]] = None
+    game_type: str = "classic"
+    draft_group_id: Optional[int] = None
 
 
 @dataclass
@@ -66,6 +76,15 @@ class DKEntriesData:
     entries: List[DKEntry]
     player_pool: List[DKPlayer]
     roster_slots: List[str]  # ordered slot names from the header
+
+
+def _parse_entry_fee(raw: str) -> float:
+    """Parse an entry fee string like '$15.00' into a float."""
+    cleaned = raw.strip().replace("$", "").replace(",", "")
+    try:
+        return float(cleaned)
+    except (ValueError, TypeError):
+        return 0.0
 
 
 def parse_player_slot(slot_value: str) -> Tuple[Optional[str], Optional[int]]:
@@ -81,14 +100,55 @@ def parse_player_slot(slot_value: str) -> Tuple[Optional[str], Optional[int]]:
     return slot_value.strip(), None
 
 
-def parse_dk_entries_csv(csv_content: str) -> DKEntriesData:
+_REQUIRED_HEADERS = {"entry id", "contest name", "contest id", "entry fee"}
+
+
+def validate_dk_csv_header(header: List[str]) -> None:
+    """Validate that the CSV header contains required DK entries columns.
+
+    Raises ValueError with a descriptive message if validation fails.
+    """
+    if not header:
+        raise ValueError("Empty CSV file")
+
+    normalised = [h.strip().lower() for h in header]
+
+    missing = _REQUIRED_HEADERS - set(normalised[:4])
+    if missing:
+        raise ValueError(
+            f"Invalid CSV format — missing required columns: {', '.join(sorted(missing))}. "
+            "Expected a DraftKings entries CSV with columns: Entry ID, Contest Name, Contest ID, Entry Fee, "
+            "followed by roster position columns (SP, C, 1B, etc.)"
+        )
+
+    # Check for at least one roster slot column after Entry Fee
+    roster_start = 4
+    has_roster = False
+    for i in range(roster_start, len(header)):
+        val = header[i].strip()
+        if val == "":
+            break
+        if val.upper() in ("SP", "RP", "P", "C", "1B", "2B", "3B", "SS", "OF", "UTIL"):
+            has_roster = True
+            break
+
+    if not has_roster:
+        raise ValueError(
+            "Invalid CSV format — no roster position columns found after Entry Fee. "
+            "Expected columns like SP, C, 1B, 2B, 3B, SS, OF after Entry Fee."
+        )
+
+
+def parse_dk_entries_csv(csv_content: str) -> Tuple[DKEntriesData, List[int]]:
     """Parse a DraftKings entries CSV file.
 
     The CSV has two sections:
     1. Entry rows: Entry ID, Contest Name, Contest ID, Entry Fee, then roster slots
     2. Player pool: starts after a row with blank Entry ID and Position header
 
-    Returns structured data with contests, entries, and player pool.
+    Returns:
+        Tuple of (structured data, list of skipped row numbers).
+        Skipped rows are those with incomplete data (missing Entry ID, Contest ID, etc.).
     """
     reader = csv.reader(io.StringIO(csv_content))
 
@@ -96,6 +156,9 @@ def parse_dk_entries_csv(csv_content: str) -> DKEntriesData:
     header = next(reader, None)
     if not header:
         raise ValueError("Empty CSV file")
+
+    # Validate header format
+    validate_dk_csv_header(header)
 
     # Identify roster slot columns (after Entry Fee, before the empty column)
     # Header: Entry ID, Contest Name, Contest ID, Entry Fee, SP, SP, C, 1B, 2B, 3B, SS, OF, OF, OF, , Instructions, ...
@@ -119,14 +182,27 @@ def parse_dk_entries_csv(csv_content: str) -> DKEntriesData:
     player_pool: List[DKPlayer] = []
     pool_header_found = False
     pool_col_offset = pool_col_start
+    skipped_rows: List[int] = []
+    row_num = 1  # header was row 1
 
     for row in reader:
+        row_num += 1
         if len(row) < 4:
             continue
 
         entry_id = row[0].strip()
         # If entry_id is non-empty and numeric-ish, it's an entry row
         if entry_id and entry_id.isdigit():
+            contest_name = row[1].strip() if len(row) > 1 else ""
+            contest_id = row[2].strip() if len(row) > 2 else ""
+            entry_fee = row[3].strip() if len(row) > 3 else ""
+
+            # Validate required fields — skip incomplete rows
+            if not contest_id or not contest_name:
+                skipped_rows.append(row_num)
+                _try_parse_pool_row(row, pool_col_offset, player_pool)
+                continue
+
             players = []
             for i, slot in enumerate(roster_slots):
                 col_idx = roster_start + i
@@ -141,14 +217,13 @@ def parse_dk_entries_csv(csv_content: str) -> DKEntriesData:
                         })
             entries.append(DKEntry(
                 entry_id=entry_id,
-                contest_name=row[1].strip() if len(row) > 1 else "",
-                contest_id=row[2].strip() if len(row) > 2 else "",
-                entry_fee=row[3].strip() if len(row) > 3 else "",
+                contest_name=contest_name,
+                contest_id=contest_id,
+                entry_fee=entry_fee,
                 players=players,
             ))
 
             # Also check if this row has player pool data in the right-side columns
-            # Pool data rows have Position in the pool_col_offset column
             _try_parse_pool_row(row, pool_col_offset, player_pool)
 
         elif not entry_id:
@@ -164,6 +239,7 @@ def parse_dk_entries_csv(csv_content: str) -> DKEntriesData:
                 contest_id=cid,
                 contest_name=entry.contest_name,
                 entry_fee=entry.entry_fee,
+                entry_fee_numeric=_parse_entry_fee(entry.entry_fee),
                 entry_count=0,
                 entry_ids=[],
             )
@@ -171,15 +247,18 @@ def parse_dk_entries_csv(csv_content: str) -> DKEntriesData:
         contests_map[cid].entry_ids.append(entry.entry_id)
 
     logger.info(
-        "Parsed DK entries: %d entries across %d contests, %d players in pool",
-        len(entries), len(contests_map), len(player_pool),
+        "Parsed DK entries: %d entries across %d contests, %d players in pool, %d skipped rows",
+        len(entries), len(contests_map), len(player_pool), len(skipped_rows),
     )
 
-    return DKEntriesData(
-        contests=list(contests_map.values()),
-        entries=entries,
-        player_pool=player_pool,
-        roster_slots=roster_slots,
+    return (
+        DKEntriesData(
+            contests=list(contests_map.values()),
+            entries=entries,
+            player_pool=player_pool,
+            roster_slots=roster_slots,
+        ),
+        skipped_rows,
     )
 
 
@@ -339,3 +418,113 @@ def _position_to_dk_slot(position: str) -> str:
         if p in ("C", "1B", "2B", "3B", "SS", "OF", "LF", "CF", "RF"):
             return "OF" if p in ("LF", "CF", "RF") else p
     return "UTIL"
+
+
+_DK_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json",
+}
+
+
+async def enrich_contests_from_dk(contests: List[DKContestInfo]) -> None:
+    """Fetch contest details from DK API and enrich parsed contests.
+
+    Uses two sources:
+    1. Contest detail API per contest (has full payout structure)
+    2. Lobby API as fallback (has field size, prize pool, max entries)
+
+    Modifies contests in place. Fails silently if API is unreachable.
+    """
+    if not contests:
+        return
+
+    async with httpx.AsyncClient(headers=_DK_HEADERS, timeout=15) as client:
+        # Try the per-contest detail API first (works for started contests)
+        for contest in contests:
+            try:
+                resp = await client.get(
+                    f"https://api.draftkings.com/contests/v1/contests/{contest.contest_id}?format=json"
+                )
+                if resp.status_code == 200:
+                    detail = resp.json().get("contestDetail", {})
+                    _apply_contest_detail(contest, detail)
+            except Exception as exc:
+                logger.debug("Contest detail fetch failed for %s: %s", contest.contest_id, exc)
+
+        # Fill gaps from lobby if needed
+        missing = [c for c in contests if c.field_size is None]
+        if missing:
+            try:
+                resp = await client.get(
+                    "https://www.draftkings.com/lobby/getcontests?sport=MLB"
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                lobby_map: Dict[str, dict] = {}
+                for lc in data.get("Contests", []):
+                    cid = str(lc.get("id", ""))
+                    lobby_map[cid] = lc
+
+                for contest in missing:
+                    lc = lobby_map.get(contest.contest_id)
+                    if lc:
+                        _apply_lobby_contest(contest, lc)
+            except Exception as exc:
+                logger.debug("DK lobby fetch failed: %s", exc)
+
+    enriched = sum(1 for c in contests if c.field_size is not None)
+    logger.info("DK enrichment: enriched %d/%d contests", enriched, len(contests))
+
+
+def _apply_contest_detail(contest: DKContestInfo, detail: dict) -> None:
+    """Apply contest detail API data to a DKContestInfo."""
+    # Direct fields from detail API
+    if detail.get("maximumEntries"):
+        contest.field_size = detail["maximumEntries"]
+    if detail.get("maximumEntriesPerUser"):
+        contest.max_entries_per_user = detail["maximumEntriesPerUser"]
+    if detail.get("totalPayouts"):
+        contest.prize_pool = detail["totalPayouts"]
+    if detail.get("draftGroupId"):
+        contest.draft_group_id = detail["draftGroupId"]
+    gt = str(detail.get("gameTypeId", "")).lower()
+    if gt in ("96",):
+        contest.game_type = "showdown"
+
+    # Parse payout summary
+    payout_summary = detail.get("payoutSummary", [])
+    if payout_summary:
+        payouts = []
+        for tier in payout_summary:
+            # Extract numeric payout from descriptions
+            payout_val = 0.0
+            for desc in tier.get("payoutDescriptions", []):
+                if desc.get("value"):
+                    payout_val = desc["value"]
+                    break
+            payouts.append({
+                "minPosition": tier.get("minPosition", 0),
+                "maxPosition": tier.get("maxPosition", 0),
+                "payout": payout_val,
+            })
+        contest.payout_structure = payouts
+
+
+def _apply_lobby_contest(contest: DKContestInfo, lc: dict) -> None:
+    """Apply lobby API data (minified keys) to a DKContestInfo."""
+    # Lobby uses minified keys: m=field_size, a=entry_fee, po=prize_pool,
+    # mec=max_entries, dg=draft_group_id, gameType=game_type
+    if contest.field_size is None:
+        contest.field_size = lc.get("m")
+    if contest.prize_pool is None:
+        contest.prize_pool = lc.get("po")
+    if contest.max_entries_per_user is None:
+        contest.max_entries_per_user = lc.get("mec")
+    if contest.draft_group_id is None:
+        contest.draft_group_id = lc.get("dg")
+    gt = str(lc.get("gameType", "")).lower()
+    if "showdown" in gt:
+        contest.game_type = "showdown"

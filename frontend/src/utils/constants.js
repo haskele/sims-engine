@@ -120,5 +120,17 @@ export const POSITION_COLORS = {
   SS: '#ec4899',
   OF: '#06b6d4',
   UTIL: '#6b7280',
+  // Multi-position combos (use first position's color)
   'C/1B': '#f59e0b',
+  '1B/3B': '#10b981',
+  '1B/OF': '#10b981',
+  '1B/2B': '#10b981',
+  '2B/3B': '#3b82f6',
+  '2B/SS': '#3b82f6',
+  '2B/OF': '#3b82f6',
+  '3B/SS': '#8b5cf6',
+  '3B/OF': '#8b5cf6',
+  'SS/OF': '#ec4899',
+  '1B/3B/OF': '#10b981',
+  '2B/3B/OF': '#3b82f6',
 };

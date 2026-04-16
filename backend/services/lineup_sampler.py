@@ -13,7 +13,7 @@ This is sufficient to run the simulator end-to-end.
 
 PLANNED APPROACH (v2+)
 -----------------------
-1. **Historical lineup corpus** -- Scrape completed contest results from DK
+1. **Historical lineup corpus** -- Collect completed contest results from DK
    (via ``scripts/scrape_contest_results.py``).  Each historical lineup
    becomes a training example with features:
      - Contest: entry fee tier, field size, game type (GPP vs cash)

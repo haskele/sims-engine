@@ -1,10 +1,11 @@
 """Simulation endpoints."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from datetime import datetime, timezone
-from typing import Any, List, Optional
+from datetime import date, datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
@@ -18,6 +19,7 @@ from models.player import Player
 from models.projection import Projection
 from models.simulation import SimulationResult
 from services.simulator import SimulationConfig, run_simulation
+from services.csv_projections import list_available_slates, load_csv_projections
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/simulations", tags=["simulations"])
@@ -32,6 +34,31 @@ class SimulationRequest(BaseModel):
     site: str = "dk"
     # Optional: provide user lineup IDs; if empty, uses all is_user lineups for the contest
     user_lineup_ids: List[int] = []
+
+
+class InlineContestConfig(BaseModel):
+    entry_fee: float = 20.0
+    field_size: int = 1000
+    game_type: str = "classic"
+    max_entries: int = 150
+    payout_structure: List[Dict[str, Any]] = []
+
+
+class InlineSimulationRequest(BaseModel):
+    sim_count: int = 10000
+    site: str = "dk"
+    slate_id: Optional[str] = None
+    contest_config: InlineContestConfig
+    user_lineups: List[List[Dict[str, Any]]]
+
+
+class QuickRunRequest(BaseModel):
+    """Simplified simulation request that auto-fills from stored DK entries data."""
+    contest_id: str  # DK contest ID string from uploaded entries
+    user_lineups: List[List[Dict[str, Any]]]  # lineup arrays with name/position/salary
+    sim_count: int = 5000
+    site: str = "dk"
+    target_date: Optional[str] = None
 
 
 class SimulationStatusOut(BaseModel):
@@ -64,7 +91,7 @@ async def _run_sim_background(sim_id: int, config: SimulationConfig) -> None:
             await db.commit()
 
             # Run
-            sim_results = await run_simulation(config)
+            sim_results = await asyncio.to_thread(run_simulation, config)
 
             # Mark complete
             result = await db.execute(
@@ -92,6 +119,197 @@ async def _run_sim_background(sim_id: int, config: SimulationConfig) -> None:
 
 
 # ── Endpoints ───────────────────────────────────────────────────────────────
+
+
+@router.post("/run-inline")
+async def run_inline_simulation(body: InlineSimulationRequest):
+    """Run a simulation synchronously with provided lineups and contest config.
+
+    No database records are created. Player pool is loaded from CSV projections.
+    """
+    if not body.user_lineups:
+        raise HTTPException(400, "No user lineups provided")
+
+    body.sim_count = min(body.sim_count, 50000)
+
+    # Load player pool from CSV
+    slates = list_available_slates(site=body.site)
+    csv_path = None
+    if body.slate_id:
+        for s in slates:
+            if s["slate_id"] == body.slate_id:
+                csv_path = s["csv_path"]
+                break
+    if not csv_path and slates:
+        # Fall back to featured
+        from services.csv_projections import identify_featured_csv_slate
+        featured = identify_featured_csv_slate(slates)
+        if featured:
+            csv_path = featured["csv_path"]
+
+    if not csv_path:
+        raise HTTPException(400, "No projection CSV found for this slate")
+
+    raw_projections = load_csv_projections(csv_path, body.site)
+    if not raw_projections:
+        raise HTTPException(400, "No projections loaded from CSV")
+
+    # Build player pool for simulator
+    player_pool = []
+    for i, p in enumerate(raw_projections):
+        player_pool.append({
+            "id": i + 1,
+            "name": p["player_name"],
+            "team": p["team"],
+            "position": p["position"],
+            "salary": p.get("salary", 3000),
+            "floor_pts": p.get("floor_pts", 0),
+            "median_pts": p.get("median_pts", 0),
+            "ceiling_pts": p.get("ceiling_pts", 0),
+            "projected_ownership": p.get("projected_ownership", 5.0),
+        })
+
+    # Build name→id map so we can resolve user lineup player references
+    name_to_id = {p["name"]: p["id"] for p in player_pool}
+
+    # Convert user lineups to the format the simulator expects (with player_id)
+    resolved_lineups = []
+    for lu in body.user_lineups:
+        resolved = []
+        for slot in lu:
+            pid = name_to_id.get(slot.get("name"), 0)
+            resolved.append({
+                "player_id": pid,
+                "name": slot.get("name", ""),
+                "position": slot.get("position", ""),
+                "salary": slot.get("salary", 0),
+                "team": slot.get("team", ""),
+            })
+        resolved_lineups.append(resolved)
+
+    contest_cfg = {
+        "entry_fee": body.contest_config.entry_fee,
+        "field_size": body.contest_config.field_size,
+        "game_type": body.contest_config.game_type,
+        "max_entries": body.contest_config.max_entries,
+        "payout_structure": body.contest_config.payout_structure,
+    }
+
+    sim_config = SimulationConfig(
+        sim_count=body.sim_count,
+        contest_config=contest_cfg,
+        game_slate=[],
+        player_pool=player_pool,
+        user_lineups=resolved_lineups,
+        site=body.site,
+    )
+
+    results = await asyncio.to_thread(run_simulation, sim_config)
+    return results
+
+
+@router.post("/quick-run")
+async def quick_run_simulation(body: QuickRunRequest):
+    """Run a simulation using stored DK entries data for contest config.
+
+    Looks up field_size, entry_fee, payout_structure from the uploaded DK
+    entries data, builds a player pool from current CSV projections, and
+    runs the simulation synchronously.
+    """
+    from api.dk_entries import _current_data as dk_data
+    from services.csv_projections import identify_featured_csv_slate
+
+    if not dk_data:
+        raise HTTPException(400, "No DK entries uploaded — upload a CSV first")
+
+    if not body.user_lineups:
+        raise HTTPException(400, "No user lineups provided")
+
+    body.sim_count = min(body.sim_count, 50000)
+
+    # Find the contest in stored DK entries data
+    contest_info = None
+    for c in dk_data.contests:
+        if c.contest_id == body.contest_id:
+            contest_info = c
+            break
+
+    if not contest_info:
+        raise HTTPException(404, f"Contest {body.contest_id} not found in uploaded entries")
+
+    # Load player pool from CSV projections
+    try:
+        d = date.fromisoformat(body.target_date) if body.target_date else date.today()
+    except ValueError:
+        raise HTTPException(400, "Invalid date format, use YYYY-MM-DD")
+
+    slates = list_available_slates(site=body.site, target_date=d)
+    csv_path = None
+    if slates:
+        featured = identify_featured_csv_slate(slates)
+        if featured:
+            csv_path = featured["csv_path"]
+
+    if not csv_path:
+        raise HTTPException(400, "No projection CSV found for this date/site")
+
+    raw_projections = load_csv_projections(csv_path, body.site)
+    if not raw_projections:
+        raise HTTPException(400, "No projections loaded from CSV")
+
+    # Build player pool for simulator
+    player_pool = []
+    for i, p in enumerate(raw_projections):
+        player_pool.append({
+            "id": i + 1,
+            "name": p["player_name"],
+            "team": p["team"],
+            "position": p["position"],
+            "salary": p.get("salary", 3000),
+            "floor_pts": p.get("floor_pts", 0),
+            "median_pts": p.get("median_pts", 0),
+            "ceiling_pts": p.get("ceiling_pts", 0),
+            "projected_ownership": p.get("projected_ownership", 5.0),
+        })
+
+    name_to_id = {p["name"]: p["id"] for p in player_pool}
+
+    # Convert user lineups to simulator format
+    resolved_lineups = []
+    for lu in body.user_lineups:
+        resolved = []
+        for slot in lu:
+            pid = name_to_id.get(slot.get("name"), 0)
+            resolved.append({
+                "player_id": pid,
+                "name": slot.get("name", ""),
+                "position": slot.get("position", ""),
+                "salary": slot.get("salary", 0),
+                "team": slot.get("team", ""),
+            })
+        resolved_lineups.append(resolved)
+
+    # Build contest config from stored DK entries data
+    payout_structure = contest_info.payout_structure or []
+    contest_cfg = {
+        "entry_fee": contest_info.entry_fee_numeric,
+        "field_size": contest_info.field_size or 1000,
+        "game_type": contest_info.game_type,
+        "max_entries": contest_info.max_entries_per_user or 150,
+        "payout_structure": payout_structure,
+    }
+
+    sim_config = SimulationConfig(
+        sim_count=body.sim_count,
+        contest_config=contest_cfg,
+        game_slate=[],
+        player_pool=player_pool,
+        user_lineups=resolved_lineups,
+        site=body.site,
+    )
+
+    results = await asyncio.to_thread(run_simulation, sim_config)
+    return results
 
 
 @router.post("/", response_model=SimulationStatusOut, status_code=202)

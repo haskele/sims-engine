@@ -1,51 +1,60 @@
 import { useState, useRef } from 'react';
-import { Upload, FileText, Hash, ArrowRight, Check, AlertCircle, Trophy, Users, DollarSign } from 'lucide-react';
+import { Upload, FileText, Hash, ArrowRight, Check, AlertCircle, Trophy, Users, DollarSign, Loader2 } from 'lucide-react';
 import { formatCurrency, formatCompact } from '../utils/formatting';
 import { Link } from 'react-router-dom';
-
-const mockPayoutTable = [
-  { place: '1st', payout: 30000 },
-  { place: '2nd', payout: 15000 },
-  { place: '3rd', payout: 10000 },
-  { place: '4th-5th', payout: 5000 },
-  { place: '6th-10th', payout: 2500 },
-  { place: '11th-25th', payout: 1000 },
-  { place: '26th-50th', payout: 500 },
-  { place: '51st-100th', payout: 250 },
-  { place: '101st-250th', payout: 100 },
-  { place: '251st-500th', payout: 50 },
-  { place: '501st-1000th', payout: 30 },
-  { place: '1001st-2500th', payout: 20 },
-];
+import { api } from '../api/client';
+import PayoutDisplay from '../components/PayoutDisplay';
+import { useApp } from '../context/AppContext';
 
 export default function ContestImport() {
+  const { uploadedContests, setUploadedContests } = useApp();
   const [mode, setMode] = useState('upload'); // 'upload' | 'manual'
   const [dragOver, setDragOver] = useState(false);
-  const [uploaded, setUploaded] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploaded, setUploaded] = useState(uploadedContests.length > 0);
+  const [uploadResult, setUploadResult] = useState(
+    uploadedContests.length > 0 ? { contests: uploadedContests, total_entries: uploadedContests.reduce((s, c) => s + (c.entry_count || 0), 0) } : null
+  );
+  const [error, setError] = useState(null);
+  const [skippedRows, setSkippedRows] = useState([]);
   const [contestId, setContestId] = useState('');
   const [numEntries, setNumEntries] = useState(20);
   const fileInputRef = useRef(null);
 
-  const mockImportedContest = {
-    name: 'DK $15 Main Slate MME',
-    site: 'DraftKings',
-    entryFee: 15,
-    fieldSize: 12543,
-    prizePool: 150000,
-    maxEntries: 150,
-    numEntries: 20,
+  const handleUpload = async (file) => {
+    if (!file) return;
+    setUploading(true);
+    setError(null);
+    setSkippedRows([]);
+    try {
+      const result = await api.uploadDkEntries(file);
+      setUploadResult(result);
+      setUploaded(true);
+      // Save contests to context (persists per user+slate)
+      if (result.contests) {
+        setUploadedContests(result.contests);
+      }
+      // Show skipped rows if any
+      if (result.skipped_rows && result.skipped_rows.length > 0) {
+        setSkippedRows(result.skipped_rows);
+      }
+    } catch (err) {
+      setError(err.message || 'Upload failed');
+    } finally {
+      setUploading(false);
+    }
   };
 
   const handleDrop = (e) => {
     e.preventDefault();
     setDragOver(false);
-    // Simulate upload
-    setTimeout(() => setUploaded(true), 800);
+    const file = e.dataTransfer.files[0];
+    if (file) handleUpload(file);
   };
 
-  const handleFileSelect = () => {
-    // Simulate upload
-    setTimeout(() => setUploaded(true), 800);
+  const handleFileSelect = (e) => {
+    const file = e.target.files[0];
+    if (file) handleUpload(file);
   };
 
   const handleManualImport = () => {
@@ -54,17 +63,20 @@ export default function ContestImport() {
     }
   };
 
+  const contests = uploadResult?.contests || [];
+  const totalEntries = uploadResult?.total_entries || 0;
+
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       <div>
         <h1 className="text-xl font-bold text-gray-100">Contest Import</h1>
-        <p className="text-sm text-gray-500 mt-0.5">Upload a contest CSV or enter a contest ID</p>
+        <p className="text-sm text-gray-500 mt-0.5">Upload a DraftKings entries CSV to configure contests for simulation</p>
       </div>
 
       {/* Mode toggle */}
       <div className="flex items-center gap-1 bg-gray-900 rounded-lg p-1 border border-gray-800 w-fit">
         <button
-          onClick={() => { setMode('upload'); setUploaded(false); }}
+          onClick={() => { setMode('upload'); setUploaded(false); setError(null); }}
           className={`flex items-center gap-2 px-4 py-2 rounded-md text-xs font-semibold transition-colors ${
             mode === 'upload' ? 'bg-gray-800 text-white' : 'text-gray-400 hover:text-gray-200'
           }`}
@@ -73,7 +85,7 @@ export default function ContestImport() {
           Upload CSV
         </button>
         <button
-          onClick={() => { setMode('manual'); setUploaded(false); }}
+          onClick={() => { setMode('manual'); setUploaded(false); setError(null); }}
           className={`flex items-center gap-2 px-4 py-2 rounded-md text-xs font-semibold transition-colors ${
             mode === 'manual' ? 'bg-gray-800 text-white' : 'text-gray-400 hover:text-gray-200'
           }`}
@@ -83,11 +95,18 @@ export default function ContestImport() {
         </button>
       </div>
 
+      {error && (
+        <div className="rounded-lg border border-red-800 bg-red-900/20 px-4 py-3 text-sm text-red-400 flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 shrink-0" />
+          {error}
+        </div>
+      )}
+
       {!uploaded ? (
         <>
           {mode === 'upload' ? (
             <div
-              className={`drop-zone rounded-lg p-12 flex flex-col items-center justify-center cursor-pointer ${
+              className={`drop-zone rounded-lg p-6 sm:p-12 flex flex-col items-center justify-center cursor-pointer ${
                 dragOver ? 'drag-over' : ''
               }`}
               onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
@@ -102,10 +121,19 @@ export default function ContestImport() {
                 className="hidden"
                 onChange={handleFileSelect}
               />
-              <FileText className="w-12 h-12 text-gray-600 mb-4" />
-              <p className="text-sm text-gray-300 mb-1">Drop your contest CSV here</p>
-              <p className="text-xs text-gray-500">or click to browse files</p>
-              <p className="text-[10px] text-gray-600 mt-3">Supports DraftKings and FanDuel export formats</p>
+              {uploading ? (
+                <>
+                  <Loader2 className="w-12 h-12 text-blue-500 animate-spin mb-4" />
+                  <p className="text-sm text-gray-300">Uploading and parsing entries...</p>
+                </>
+              ) : (
+                <>
+                  <FileText className="w-12 h-12 text-gray-600 mb-4" />
+                  <p className="text-sm text-gray-300 mb-1">Drop your DK entries CSV here</p>
+                  <p className="text-xs text-gray-500">or click to browse files</p>
+                  <p className="text-[10px] text-gray-600 mt-3">Download from DraftKings: My Contests &rarr; Export Entries</p>
+                </>
+              )}
             </div>
           ) : (
             <div className="rounded-lg border border-gray-800 bg-gray-900 p-6 space-y-4">
@@ -146,60 +174,74 @@ export default function ContestImport() {
         <div className="space-y-4">
           <div className="flex items-center gap-2 text-emerald-400 text-sm">
             <Check className="w-4 h-4" />
-            Contest imported successfully
+            {contests.length > 0
+              ? `Imported ${totalEntries} entries across ${contests.length} contest${contests.length > 1 ? 's' : ''}`
+              : 'Contest imported successfully'}
           </div>
 
-          {/* Contest summary */}
-          <div className="rounded-lg border border-gray-800 bg-gray-900 p-6">
-            <div className="flex items-center justify-between mb-4">
+          {/* Skipped rows alert */}
+          {skippedRows.length > 0 && (
+            <div className="rounded-lg border border-amber-800 bg-amber-900/20 px-4 py-3 text-sm text-amber-400 flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
               <div>
-                <h2 className="text-lg font-bold text-gray-100">{mockImportedContest.name}</h2>
-                <p className="text-xs text-gray-500 mt-0.5">{mockImportedContest.site}</p>
-              </div>
-              <Trophy className="w-6 h-6 text-amber-400" />
-            </div>
-
-            <div className="grid grid-cols-4 gap-4 mb-6">
-              <div className="rounded-lg bg-gray-950 p-3">
-                <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Entry Fee</div>
-                <div className="text-lg font-bold font-mono text-gray-100">{formatCurrency(mockImportedContest.entryFee)}</div>
-              </div>
-              <div className="rounded-lg bg-gray-950 p-3">
-                <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Field Size</div>
-                <div className="text-lg font-bold font-mono text-gray-100 flex items-center gap-1.5">
-                  <Users className="w-4 h-4 text-gray-500" />
-                  {formatCompact(mockImportedContest.fieldSize)}
-                </div>
-              </div>
-              <div className="rounded-lg bg-gray-950 p-3">
-                <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Prize Pool</div>
-                <div className="text-lg font-bold font-mono text-emerald-400">{formatCurrency(mockImportedContest.prizePool)}</div>
-              </div>
-              <div className="rounded-lg bg-gray-950 p-3">
-                <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Your Entries</div>
-                <div className="text-lg font-bold font-mono text-blue-400">
-                  {mockImportedContest.numEntries}
-                  <span className="text-xs text-gray-500 font-normal ml-1">/ {mockImportedContest.maxEntries}</span>
-                </div>
+                <p className="font-medium">Some rows were skipped due to incomplete data:</p>
+                <p className="text-xs text-amber-500 mt-1">
+                  Row{skippedRows.length > 1 ? 's' : ''} {skippedRows.join(', ')}
+                </p>
               </div>
             </div>
+          )}
 
-            {/* Payout table */}
-            <div>
-              <h3 className="text-xs font-semibold text-gray-400 mb-3">Payout Structure</h3>
-              <div className="grid grid-cols-4 gap-x-6 gap-y-1">
-                {mockPayoutTable.map((row) => (
-                  <div key={row.place} className="flex items-center justify-between py-1">
-                    <span className="text-xs text-gray-400">{row.place}</span>
-                    <span className="text-xs font-mono text-emerald-400">{formatCurrency(row.payout)}</span>
+          {/* Contest list */}
+          {contests.map((contest, i) => (
+            <div key={contest.contest_id || i} className="rounded-lg border border-gray-800 bg-gray-900 p-6">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h2 className="text-lg font-bold text-gray-100">{contest.contest_name}</h2>
+                  <p className="text-xs text-gray-500 mt-0.5">DraftKings &middot; {contest.game_type || 'classic'}</p>
+                </div>
+                <Trophy className="w-6 h-6 text-amber-400" />
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+                <div className="rounded-lg bg-gray-950 p-3">
+                  <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Entry Fee</div>
+                  <div className="text-lg font-bold font-mono text-gray-100">
+                    ${typeof contest.entry_fee === 'number' ? contest.entry_fee.toFixed(2) : contest.entry_fee}
                   </div>
-                ))}
+                </div>
+                <div className="rounded-lg bg-gray-950 p-3">
+                  <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Field Size</div>
+                  <div className="text-lg font-bold font-mono text-gray-100 flex items-center gap-1.5">
+                    <Users className="w-4 h-4 text-gray-500" />
+                    {contest.field_size ? contest.field_size.toLocaleString() : '—'}
+                  </div>
+                </div>
+                <div className="rounded-lg bg-gray-950 p-3">
+                  <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Your Entries</div>
+                  <div className="text-lg font-bold font-mono text-blue-400">
+                    {contest.entry_count}
+                    {contest.max_entries_per_user && (
+                      <span className="text-xs text-gray-500 font-normal ml-1">/ {contest.max_entries_per_user}</span>
+                    )}
+                  </div>
+                </div>
+                <div className="rounded-lg bg-gray-950 p-3">
+                  <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Prize Pool</div>
+                  <div className="text-lg font-bold font-mono text-emerald-400">
+                    {contest.prize_pool ? formatCurrency(contest.prize_pool) : '—'}
+                  </div>
+                </div>
+                <div className="rounded-lg bg-gray-950 p-3">
+                  <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Top Payouts</div>
+                  <PayoutDisplay payoutStructure={contest.payout_structure} />
+                </div>
               </div>
             </div>
-          </div>
+          ))}
 
           {/* Action buttons */}
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <Link
               to="/lineups"
               className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-500 transition-colors"
@@ -215,7 +257,7 @@ export default function ContestImport() {
               <ArrowRight className="w-4 h-4" />
             </Link>
             <button
-              onClick={() => setUploaded(false)}
+              onClick={() => { setUploaded(false); setUploadResult(null); setError(null); setSkippedRows([]); setUploadedContests([]); }}
               className="px-4 py-2.5 text-xs text-gray-500 hover:text-gray-300 transition-colors"
             >
               Import Another

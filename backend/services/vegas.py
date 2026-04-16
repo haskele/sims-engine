@@ -1,9 +1,11 @@
-"""DraftKings Sportsbook API client for MLB lines and totals."""
+"""Vegas odds: DraftKings Sportsbook + Fantasy Labs APIs for MLB lines and totals."""
 from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, List, Optional
+import time
+from datetime import date
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -21,6 +23,45 @@ _HEADERS = {
 
 # DK Sportsbook MLB league ID
 MLB_LEAGUE_ID = 84240
+
+# ── Fantasy Labs team name → standard abbreviation ──────────────────────────
+_FL_TEAM_ABBR: Dict[str, str] = {
+    "Arizona Diamondbacks": "ARI",
+    "Atlanta Braves": "ATL",
+    "Baltimore Orioles": "BAL",
+    "Boston Red Sox": "BOS",
+    "Chicago Cubs": "CHC",
+    "Chicago White Sox": "CWS",
+    "Cincinnati Reds": "CIN",
+    "Cleveland Guardians": "CLE",
+    "Colorado Rockies": "COL",
+    "Detroit Tigers": "DET",
+    "Houston Astros": "HOU",
+    "Kansas City Royals": "KC",
+    "Los Angeles Angels": "LAA",
+    "Los Angeles Dodgers": "LAD",
+    "Miami Marlins": "MIA",
+    "Milwaukee Brewers": "MIL",
+    "Minnesota Twins": "MIN",
+    "New York Mets": "NYM",
+    "New York Yankees": "NYY",
+    "Athletics": "OAK",
+    "Oakland Athletics": "OAK",
+    "Philadelphia Phillies": "PHI",
+    "Pittsburgh Pirates": "PIT",
+    "San Diego Padres": "SD",
+    "San Francisco Giants": "SF",
+    "Seattle Mariners": "SEA",
+    "St. Louis Cardinals": "STL",
+    "Tampa Bay Rays": "TB",
+    "Texas Rangers": "TEX",
+    "Toronto Blue Jays": "TOR",
+    "Washington Nationals": "WSH",
+}
+
+# Cache for Fantasy Labs odds: key -> (timestamp, data)
+_fl_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
+_FL_CACHE_TTL = 300  # 5 minutes
 
 
 async def get_mlb_odds() -> Dict[str, Any]:
@@ -165,3 +206,95 @@ def _ml_to_prob(ml: int) -> float:
         return 100.0 / (ml + 100.0)
     else:
         return abs(ml) / (abs(ml) + 100.0)
+
+
+# ── Fantasy Labs sportevents API ────────────────────────────────────────────
+
+
+async def fetch_fantasylabs_odds(
+    target_date: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Fetch MLB odds from Fantasy Labs sportevents API.
+
+    Returns a list of per-game dicts with keys:
+      away_team, home_team (abbreviations), away_ml, home_ml,
+      game_total, spread, away_implied, home_implied
+    """
+    d = date.fromisoformat(target_date) if target_date else date.today()
+    date_key = f"{d.month}_{d.day}_{d.year}"
+    cache_key = f"fl-odds-{date_key}"
+
+    # Check cache
+    if cache_key in _fl_cache:
+        ts, cached = _fl_cache[cache_key]
+        if time.time() - ts < _FL_CACHE_TTL:
+            return cached
+
+    url = f"https://www.fantasylabs.com/api/sportevents/3/{date_key}"
+    try:
+        async with httpx.AsyncClient(headers=_HEADERS, timeout=15) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            raw = resp.json()
+    except Exception as exc:
+        logger.warning("Fantasy Labs odds fetch failed for %s: %s", date_key, exc)
+        return _fl_cache.get(cache_key, (0, []))[1]  # return stale cache if any
+
+    games: List[Dict[str, Any]] = []
+    for ev in raw if isinstance(raw, list) else []:
+        away_full = ev.get("VisitorTeam", "")
+        home_full = ev.get("HomeTeam", "")
+        away_abbr = _FL_TEAM_ABBR.get(away_full, "")
+        home_abbr = _FL_TEAM_ABBR.get(home_full, "")
+        if not away_abbr or not home_abbr:
+            logger.debug("Unknown FL team: %s vs %s", away_full, home_full)
+            continue
+
+        away_ml = _safe_int(ev.get("MLMoney1"))
+        home_ml = _safe_int(ev.get("MLMoney2"))
+        game_total = _safe_float_val(ev.get("OU"))
+        spread = _safe_float_val(ev.get("Spread"))
+
+        # Derive implied team totals from game O/U + moneyline
+        away_implied = None
+        home_implied = None
+        if game_total and away_ml is not None and home_ml is not None:
+            away_prob = _ml_to_prob(away_ml)
+            home_prob = _ml_to_prob(home_ml)
+            total_prob = away_prob + home_prob
+            if total_prob > 0:
+                away_implied = round(game_total * away_prob / total_prob, 2)
+                home_implied = round(game_total * home_prob / total_prob, 2)
+
+        games.append({
+            "away_team": away_abbr,
+            "home_team": home_abbr,
+            "away_ml": away_ml,
+            "home_ml": home_ml,
+            "game_total": game_total,
+            "spread": spread,
+            "away_implied": away_implied,
+            "home_implied": home_implied,
+        })
+
+    _fl_cache[cache_key] = (time.time(), games)
+    logger.info("Fetched %d MLB game odds from Fantasy Labs for %s", len(games), date_key)
+    return games
+
+
+def _safe_int(val: Any) -> Optional[int]:
+    if val is None:
+        return None
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return None
+
+
+def _safe_float_val(val: Any) -> Optional[float]:
+    if val is None:
+        return None
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return None

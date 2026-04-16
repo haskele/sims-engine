@@ -74,16 +74,23 @@ class SimulationResults:
                 "sim_count": 0,
                 "avg_roi": 0.0,
                 "roi_std": 0.0,
+                "p25_roi": 0.0,
+                "p75_roi": 0.0,
+                "top_roi": 0.0,
                 "cash_rate": 0.0,
                 "win_rate": 0.0,
                 "avg_profit": 0.0,
                 "median_profit": 0.0,
             }
         profits = np.array(self.entry_profits)
+        fee = max(entry_fee, 0.01)
         return {
             "sim_count": n,
-            "avg_roi": round(float(np.mean(profits)) / max(entry_fee, 0.01) * 100, 2),
-            "roi_std": round(float(np.std(profits)) / max(entry_fee, 0.01) * 100, 2),
+            "avg_roi": round(float(np.mean(profits)) / fee * 100, 2),
+            "roi_std": round(float(np.std(profits)) / fee * 100, 2),
+            "p25_roi": round(float(np.percentile(profits, 25)) / fee * 100, 2),
+            "p75_roi": round(float(np.percentile(profits, 75)) / fee * 100, 2),
+            "top_roi": round(float(np.max(profits)) / fee * 100, 2),
             "cash_rate": round(sum(self.cash_flags) / n * 100, 2),
             "win_rate": round(sum(self.win_flags) / n * 100, 4),
             "avg_profit": round(float(np.mean(profits)), 2),
@@ -138,7 +145,7 @@ def _score_lineup(
     return total
 
 
-async def run_simulation(config: SimulationConfig) -> dict[str, Any]:
+def run_simulation(config: SimulationConfig) -> dict[str, Any]:
     """Execute a full Monte Carlo contest simulation.
 
     Parameters
@@ -195,7 +202,14 @@ async def run_simulation(config: SimulationConfig) -> dict[str, Any]:
         SimulationResults() for _ in range(user_count)
     ]
 
+    max_time = 180  # 3-minute safety net
     for sim_i in range(config.sim_count):
+        if sim_i > 0 and sim_i % 500 == 0:
+            elapsed_check = time.time() - started
+            if elapsed_check > max_time:
+                logger.warning("Simulation timed out at iteration %d / %d (%.1fs)", sim_i, config.sim_count, elapsed_check)
+                break
+
         # 1. Sample scores for all players
         score_map: dict[int, float] = {}
         for pid, (floor_p, med_p, ceil_p) in proj_map.items():
@@ -235,6 +249,15 @@ async def run_simulation(config: SimulationConfig) -> dict[str, Any]:
             "avg_roi": round(
                 np.mean([s["avg_roi"] for s in lineup_summaries]), 2
             ),
+            "p25_roi": round(
+                np.mean([s["p25_roi"] for s in lineup_summaries]), 2
+            ),
+            "p75_roi": round(
+                np.mean([s["p75_roi"] for s in lineup_summaries]), 2
+            ),
+            "top_roi": round(
+                np.max([s["top_roi"] for s in lineup_summaries]), 2
+            ),
             "cash_rate": round(
                 np.mean([s["cash_rate"] for s in lineup_summaries]), 2
             ),
@@ -243,7 +266,26 @@ async def run_simulation(config: SimulationConfig) -> dict[str, Any]:
             ),
         }
     else:
-        overall = {"avg_roi": 0, "cash_rate": 0, "win_rate": 0}
+        overall = {"avg_roi": 0, "p25_roi": 0, "p75_roi": 0, "top_roi": 0, "cash_rate": 0, "win_rate": 0}
+
+    # ROI distribution histogram (all user lineup profits pooled)
+    all_profits = []
+    for res in per_lineup_results:
+        all_profits.extend(res.entry_profits)
+    if all_profits:
+        all_roi = np.array(all_profits) / max(entry_fee, 0.01) * 100
+        # Bin into 20 buckets from min to max
+        hist_counts, hist_edges = np.histogram(all_roi, bins=20)
+        roi_distribution = [
+            {
+                "bin_start": round(float(hist_edges[i]), 1),
+                "bin_end": round(float(hist_edges[i + 1]), 1),
+                "count": int(hist_counts[i]),
+            }
+            for i in range(len(hist_counts))
+        ]
+    else:
+        roi_distribution = []
 
     elapsed = round(time.time() - started, 2)
     logger.info("Simulation complete in %.1fs", elapsed)
@@ -253,4 +295,5 @@ async def run_simulation(config: SimulationConfig) -> dict[str, Any]:
         "elapsed_seconds": elapsed,
         "overall": overall,
         "per_lineup": lineup_summaries,
+        "roi_distribution": roi_distribution,
     }

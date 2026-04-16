@@ -1,15 +1,25 @@
 import { formatSalary, formatDecimal } from '../utils/formatting';
 import { POSITION_COLORS } from '../utils/constants';
-import { ChevronDown, ChevronUp, Copy } from 'lucide-react';
+import { ChevronDown, ChevronUp, Copy, Pencil } from 'lucide-react';
 import { useState } from 'react';
 
-export default function LineupCard({ lineup, index, expanded: initialExpanded = false }) {
+export default function LineupCard({ lineup, index, expanded: initialExpanded = false, onEdit }) {
   const [expanded, setExpanded] = useState(initialExpanded);
 
   const totalSalary = lineup.players.reduce((sum, p) => sum + p.salary, 0);
   const totalProj = lineup.players.reduce((sum, p) => sum + p.median, 0);
   const salaryCap = 50000;
   const remaining = salaryCap - totalSalary;
+
+  // Compact lineup summary: (SP) M. Fried, (C) G. Sanchez, ...
+  const lineupSummary = lineup.players.map(p => {
+    const pos = p.rosterPosition || p.position;
+    const parts = p.name.split(' ');
+    const shortName = parts.length > 1
+      ? `${parts[0][0]}. ${parts.slice(1).join(' ')}`
+      : p.name;
+    return `(${pos}) ${shortName}`;
+  }).join(', ');
 
   return (
     <div className="border border-gray-800 rounded-lg bg-gray-900 overflow-hidden hover:border-gray-700 transition-colors">
@@ -42,6 +52,15 @@ export default function LineupCard({ lineup, index, expanded: initialExpanded = 
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {onEdit && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onEdit(lineup); }}
+              className="p-1 text-gray-500 hover:text-blue-400 transition-colors"
+              title="Edit lineup"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+            </button>
+          )}
           <button
             onClick={(e) => { e.stopPropagation(); }}
             className="p-1 text-gray-500 hover:text-gray-300 transition-colors"
@@ -56,6 +75,15 @@ export default function LineupCard({ lineup, index, expanded: initialExpanded = 
           )}
         </div>
       </div>
+
+      {/* Compact lineup preview (always visible) */}
+      {!expanded && (
+        <div className="px-3 pb-2 -mt-1">
+          <p className="text-[11px] text-gray-500 leading-snug truncate">
+            {lineupSummary}
+          </p>
+        </div>
+      )}
 
       {/* Player list */}
       {expanded && (

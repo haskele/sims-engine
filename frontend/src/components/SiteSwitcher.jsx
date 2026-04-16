@@ -1,7 +1,7 @@
-import { useLocalStorage } from '../hooks/useLocalStorage';
+import { useApp } from '../context/AppContext';
 
 export default function SiteSwitcher() {
-  const [site, setSite] = useLocalStorage('dfs-site', 'dk');
+  const { site, setSite } = useApp();
 
   return (
     <div className="flex items-center bg-gray-800 rounded-lg p-0.5">
@@ -27,9 +27,4 @@ export default function SiteSwitcher() {
       </button>
     </div>
   );
-}
-
-export function useSite() {
-  const [site] = useLocalStorage('dfs-site', 'dk');
-  return site;
 }

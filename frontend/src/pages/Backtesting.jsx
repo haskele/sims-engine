@@ -23,7 +23,7 @@ export default function Backtesting() {
       {/* Mock layout preview */}
       <div className="opacity-40 pointer-events-none space-y-4">
         {/* Date range picker */}
-        <div className="rounded-lg border border-gray-800 bg-gray-900 p-4 flex items-center gap-4">
+        <div className="rounded-lg border border-gray-800 bg-gray-900 p-4 flex flex-wrap items-center gap-4">
           <Calendar className="w-4 h-4 text-gray-500" />
           <div className="flex items-center gap-2">
             <input
@@ -46,7 +46,7 @@ export default function Backtesting() {
         </div>
 
         {/* Accuracy metrics */}
-        <div className="grid grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {[
             { label: 'Projection RMSE', value: '4.82', icon: TrendingUp, color: 'text-blue-400' },
             { label: 'Avg ROI (Actual)', value: '+8.3%', icon: TrendingUp, color: 'text-emerald-400' },
@@ -64,8 +64,8 @@ export default function Backtesting() {
         </div>
 
         {/* Historical results table */}
-        <div className="rounded-lg border border-gray-800 bg-gray-900 overflow-hidden">
-          <table className="w-full text-left">
+        <div className="rounded-lg border border-gray-800 bg-gray-900 overflow-x-auto">
+          <table className="w-full text-left min-w-[600px]">
             <thead>
               <tr className="border-b border-gray-800">
                 {['Date', 'Contest', 'Lineups', 'Projected ROI', 'Actual ROI', 'Cash Rate', 'Best Finish'].map((h) => (

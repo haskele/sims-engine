@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { Lock, X, Check } from 'lucide-react';
+import { X, Check } from 'lucide-react';
 import { formatSalary, formatDecimal, formatPct } from '../utils/formatting';
 import { POSITION_COLORS } from '../utils/constants';
 
-export default function PlayerRow({ player, onToggleLock, onToggleExclude, onUpdateProjection, isOdd }) {
+export default function PlayerRow({ player, playerType, onToggleExclude, onUpdateProjection, isOdd }) {
   const [editing, setEditing] = useState(null); // 'floor' | 'median' | 'ceiling' | null
   const [editValue, setEditValue] = useState('');
 
@@ -24,32 +24,23 @@ export default function PlayerRow({ player, onToggleLock, onToggleExclude, onUpd
     if (e.key === 'Escape') setEditing(null);
   };
 
-  const posColor = POSITION_COLORS[player.position] || '#6b7280';
+  // For multi-position players (e.g. "2B/OF"), use the first position's color
+  const primaryPos = player.position.split('/')[0];
+  const posColor = POSITION_COLORS[player.position] || POSITION_COLORS[primaryPos] || '#6b7280';
 
   return (
     <tr className={`${isOdd ? 'bg-gray-900/50' : 'bg-gray-950'} hover:bg-gray-800/50 transition-colors`}>
-      {/* Lock / Exclude */}
-      <td className="px-2 py-1.5 w-10">
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => onToggleLock?.(player.id)}
-            className={`p-0.5 rounded transition-colors ${
-              player.locked ? 'text-emerald-400' : 'text-gray-600 hover:text-gray-400'
-            }`}
-            title="Lock"
-          >
-            <Lock className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={() => onToggleExclude?.(player.id)}
-            className={`p-0.5 rounded transition-colors ${
-              player.excluded ? 'text-red-400' : 'text-gray-600 hover:text-gray-400'
-            }`}
-            title="Exclude"
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
-        </div>
+      {/* Exclude */}
+      <td className="px-2 py-1.5 w-8">
+        <button
+          onClick={() => onToggleExclude?.(player.id)}
+          className={`p-0.5 rounded transition-colors ${
+            player.excluded ? 'text-red-400' : 'text-gray-600 hover:text-gray-400'
+          }`}
+          title="Exclude"
+        >
+          <X className="w-3.5 h-3.5" />
+        </button>
       </td>
 
       {/* Player Name */}
@@ -88,16 +79,42 @@ export default function PlayerRow({ player, onToggleLock, onToggleExclude, onUpd
         {formatSalary(player.salary)}
       </td>
 
-      {/* Order */}
-      <td className="px-3 py-1.5 text-center">
-        {player.order ? (
-          <span className={`text-xs font-mono ${player.confirmed ? 'text-emerald-400' : 'text-amber-400'}`}>
-            {player.order}
-          </span>
-        ) : (
-          <span className="text-xs text-gray-600">--</span>
-        )}
-      </td>
+      {/* Pitcher: ERA + K/9 + K Prop  |  Hitter: Order */}
+      {playerType === 'pitchers' ? (
+        <>
+          <td className="px-3 py-1.5 text-right">
+            <span className="text-xs font-mono text-gray-300">
+              {player.era != null ? formatDecimal(player.era, 2) : '--'}
+            </span>
+          </td>
+          <td className="px-3 py-1.5 text-right">
+            <span className="text-xs font-mono text-gray-300">
+              {player.k9 != null ? formatDecimal(player.k9, 1) : '--'}
+            </span>
+          </td>
+          <td className="px-2 py-1.5 text-center">
+            <span className="text-[11px] font-mono text-cyan-400 whitespace-nowrap">
+              {player.kLine || '--'}
+            </span>
+          </td>
+        </>
+      ) : (
+        <td className="px-3 py-1.5 text-center">
+          {player.lineupStatus === 'out' ? (
+            <span className="text-xs font-mono font-semibold text-red-400">NA</span>
+          ) : player.order ? (
+            <span className={`text-xs font-mono font-semibold ${
+              player.lineupStatus === 'confirmed' ? 'text-emerald-400' :
+              player.lineupStatus === 'expected' ? 'text-amber-400' :
+              'text-gray-400'
+            }`}>
+              {player.order}
+            </span>
+          ) : (
+            <span className="text-xs text-gray-600">--</span>
+          )}
+        </td>
+      )}
 
       {/* Floor */}
       <td className="px-3 py-1.5 text-right">
@@ -177,6 +194,27 @@ export default function PlayerRow({ player, onToggleLock, onToggleExclude, onUpd
         </span>
       </td>
 
+      {/* Batter DK Props: HR 1+, 2+ TB, 2+ HRR (only for hitters) */}
+      {playerType === 'hitters' && (
+        <>
+          <td className="px-2 py-1.5 text-center">
+            <span className="text-[11px] font-mono text-cyan-400 whitespace-nowrap">
+              {player.hrLine || '--'}
+            </span>
+          </td>
+          <td className="px-2 py-1.5 text-center">
+            <span className="text-[11px] font-mono text-cyan-400 whitespace-nowrap">
+              {player.tbLine || '--'}
+            </span>
+          </td>
+          <td className="px-2 py-1.5 text-center">
+            <span className="text-[11px] font-mono text-cyan-400 whitespace-nowrap">
+              {player.hrrLine || '--'}
+            </span>
+          </td>
+        </>
+      )}
+
       {/* Min Exp */}
       <td className="px-2 py-1.5 text-right">
         {editing === 'minExp' ? (
@@ -227,13 +265,21 @@ export default function PlayerRow({ player, onToggleLock, onToggleExclude, onUpd
 
       {/* Status */}
       <td className="px-3 py-1.5 text-center">
-        {player.confirmed ? (
+        {player.lineupStatus === 'confirmed' && player.confirmed ? (
           <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded">
             <Check className="w-3 h-3" /> IN
           </span>
-        ) : (
+        ) : player.lineupStatus === 'expected' && player.confirmed ? (
           <span className="text-[10px] font-semibold text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded">
-            PROJ
+            EXP
+          </span>
+        ) : player.lineupStatus === 'out' ? (
+          <span className="text-[10px] font-semibold text-red-400 bg-red-500/10 px-1.5 py-0.5 rounded">
+            OUT
+          </span>
+        ) : (
+          <span className="text-[10px] font-semibold text-gray-500 bg-gray-500/10 px-1.5 py-0.5 rounded">
+            —
           </span>
         )}
       </td>

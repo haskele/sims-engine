@@ -71,6 +71,7 @@ from api.simulator import router as simulator_router
 from api.games import router as games_router
 from api.data_pipeline import router as pipeline_router
 from api.dk_entries import router as dk_entries_router
+from api.contest_history import router as contest_history_router
 
 app.include_router(contests_router)
 app.include_router(players_router)
@@ -80,6 +81,7 @@ app.include_router(simulator_router)
 app.include_router(games_router)
 app.include_router(pipeline_router)
 app.include_router(dk_entries_router)
+app.include_router(contest_history_router)
 
 
 # ── Health check ────────────────────────────────────────────────────────────

@@ -51,12 +51,13 @@ def _parse_filename(filename: str) -> Optional[Dict[str, str]]:
     site = m.group(5).lower()
     slate_type = m.group(6)
 
-    # Convert to 24h
+    # Convert to 24h for AM/PM label, then back to 12h for display
     if ampm == "pm" and hour != 12:
         hour += 12
     elif ampm == "am" and hour == 12:
         hour = 0
-    time_str = f"{hour}:{minute} {'PM' if hour >= 12 else 'AM'} ET"
+    display_hour = hour % 12 or 12
+    time_str = f"{display_hour}:{minute} {'PM' if hour >= 12 else 'AM'} ET"
 
     return {
         "date": date_str,
@@ -170,6 +171,16 @@ def load_csv_projections(
                 if status in ("IL", "O"):
                     continue
 
+                # Ohtani dual-role: if listed as pitcher but low IP, reclassify as hitter
+                if proj["is_pitcher"] and proj["player_name"] == "Shohei Ohtani":
+                    ip = _safe_float(row.get("IP"), 0.0)
+                    if ip is None or ip < 3.0:
+                        proj["is_pitcher"] = False
+                        proj["position"] = "OF"
+                        proj["is_confirmed"] = proj["batting_order"] is not None
+                        # Skip the pitcher filter below so he stays in the pool
+                    # else: he is a starting pitcher, keep as-is
+
                 # Filter: non-starting pitchers (relievers)
                 if proj["is_pitcher"]:
                     ip = _safe_float(row.get("IP"), 0.0)
@@ -210,8 +221,9 @@ def _parse_csv_row(row: Dict[str, str], site: str) -> Optional[Dict[str, Any]]:
     adj_own = _safe_float(row.get("Adj Own"), 0.0)
     ownership = adj_own if adj_own > 0 else my_own
 
-    # Team implied total
-    saber_total = _safe_float(row.get("Saber Total"))
+    # Team implied total (Saber Team) and game total (Saber Total)
+    saber_team = _safe_float(row.get("Saber Team"))
+    saber_game_total = _safe_float(row.get("Saber Total"))
 
     # Standard deviation
     dk_std = _safe_float(row.get("dk_std"))
@@ -268,8 +280,9 @@ def _parse_csv_row(row: Dict[str, str], site: str) -> Optional[Dict[str, Any]]:
         "season_avg": season_avg,
         "season_ops": season_ops,
         "games_in_log": 0,
-        "implied_total": saber_total,
-        "team_implied": saber_total,
+        "implied_total": saber_team,
+        "team_implied": saber_team,
+        "game_total": saber_game_total,
         "temperature": None,
         # Extra fields for simulation
         "dk_std": dk_std,
