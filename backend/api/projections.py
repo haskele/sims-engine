@@ -272,8 +272,7 @@ async def get_featured_slate_projections(
         featured = identify_featured_csv_slate(csv_slates)
         if featured and featured.get("csv_path"):
             projections = load_csv_projections(featured["csv_path"], site)
-            projections = await _overlay_lineup_status(projections, target_date=d.isoformat())
-            projections = await _overlay_player_props(projections)
+            projections = await _overlay_external_data(projections, target_date=d.isoformat())
             return [
                 SlateProjectionOut(**_sanitise_projection(p))
                 for p in projections
@@ -321,8 +320,7 @@ async def get_slate_projections(
             slate_name = cs.get("name")
             game_count = cs.get("game_count")
             projections = load_csv_projections(cs["csv_path"], site)
-            projections = await _overlay_lineup_status(projections, target_date=slate_date_str)
-            projections = await _overlay_player_props(projections)
+            projections = await _overlay_external_data(projections, target_date=slate_date_str)
             break
 
     if not projections:
@@ -594,7 +592,7 @@ async def save_slate_report(
             slate_name = cs.get("name")
             game_count = cs.get("game_count")
             projections = load_csv_projections(cs["csv_path"], site)
-            projections = await _overlay_lineup_status(projections, target_date=d.isoformat())
+            projections = await _overlay_external_data(projections, target_date=d.isoformat())
             break
 
     if not projections:
@@ -1244,47 +1242,45 @@ async def _get_game_weather(home_team: str) -> WeatherOut:
     return result
 
 
-async def _overlay_lineup_status(
+async def _overlay_external_data(
     projections: List[Dict[str, Any]],
     target_date: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Fetch latest lineup data and overlay it onto projections.
+    """Fetch lineup status and player props in parallel, then overlay onto projections."""
+    import asyncio as _aio
 
-    This runs on every projection request (with caching) so that lineup
-    changes, scratches, and pitcher swaps are always reflected.
+    async def _fetch_lineups():
+        try:
+            return await fetch_lineups(target_date=target_date)
+        except Exception as exc:
+            logger.warning("Lineup overlay failed (continuing with CSV status): %s", exc)
+            return None
 
-    For future dates, uses MLB Stats API for probable pitchers.
-    """
-    try:
-        games = await fetch_lineups(target_date=target_date)
-        if games:
-            lookup = build_lineup_lookup(games)
-            projections = apply_lineup_status(projections, lookup)
-    except Exception as exc:
-        logger.warning("Lineup overlay failed (continuing with CSV status): %s", exc)
-    return projections
+    async def _fetch_props():
+        try:
+            return await fetch_player_props()
+        except Exception as exc:
+            logger.warning("Player props overlay failed: %s", exc)
+            return None
 
+    games, props = await _aio.gather(_fetch_lineups(), _fetch_props())
 
-async def _overlay_player_props(
-    projections: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    """Fetch DK Sportsbook player props and overlay onto projections."""
-    try:
-        props = await fetch_player_props()
-        if props:
-            # Build canonical lookup for O(1) matching
-            canonical_props = build_canonical_lookup(props)
-            for p in projections:
-                name = p.get("player_name", "")
-                cn = canonical_name(name)
-                player_props = canonical_props.get(cn)
-                if player_props:
-                    p["k_line"] = player_props.get("k_line")
-                    p["hr_line"] = player_props.get("hr_line")
-                    p["tb_line"] = player_props.get("tb_line")
-                    p["hrr_line"] = player_props.get("hrr_line")
-    except Exception as exc:
-        logger.warning("Player props overlay failed: %s", exc)
+    if games:
+        lookup = build_lineup_lookup(games)
+        projections = apply_lineup_status(projections, lookup)
+
+    if props:
+        canonical_props = build_canonical_lookup(props)
+        for p in projections:
+            name = p.get("player_name", "")
+            cn = canonical_name(name)
+            player_props = canonical_props.get(cn)
+            if player_props:
+                p["k_line"] = player_props.get("k_line")
+                p["hr_line"] = player_props.get("hr_line")
+                p["tb_line"] = player_props.get("tb_line")
+                p["hrr_line"] = player_props.get("hrr_line")
+
     return projections
 
 
