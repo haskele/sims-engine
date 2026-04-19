@@ -309,7 +309,7 @@ export default function LineupEditor({ lineup, playerPool, onSave, onCancel }) {
                                   <span className="text-xs text-gray-200">{p.player_name}</span>
                                   <span className="text-[10px] text-gray-500 font-mono">{p.team}</span>
                                   {p.opp_team && (
-                                    <span className="text-[10px] text-gray-600">vs {p.opp_team}</span>
+                                    <span className="text-[10px] text-gray-600">{p.is_home === false ? `@ ${p.opp_team}` : `vs ${p.opp_team}`}</span>
                                   )}
                                 </div>
                                 <div className="flex items-center gap-4">

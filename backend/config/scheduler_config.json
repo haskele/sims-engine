@@ -1,0 +1,37 @@
+{
+  "game_hours": {
+    "start_hour": 10,
+    "start_minute": 0,
+    "end_hour": 1,
+    "end_minute": 0,
+    "timezone": "America/New_York"
+  },
+  "jobs": {
+    "refresh_lineups": {
+      "enabled": true,
+      "interval_minutes": 5,
+      "description": "Scrape latest lineup confirmations"
+    },
+    "refresh_odds": {
+      "enabled": true,
+      "interval_minutes": 10,
+      "description": "Fetch latest Vegas odds (respects prematch lock)"
+    },
+    "refresh_projections": {
+      "enabled": true,
+      "interval_minutes": 30,
+      "description": "Re-run projection pipeline with latest data"
+    },
+    "refresh_slates": {
+      "enabled": true,
+      "interval_minutes": 15,
+      "description": "Fetch DK lobby for new slates"
+    },
+    "nightly_generation": {
+      "enabled": true,
+      "run_hour": 20,
+      "run_minute": 0,
+      "description": "Generate next-day projections at 8 PM ET"
+    }
+  }
+}

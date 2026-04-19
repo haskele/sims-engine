@@ -2,6 +2,10 @@ const BASE_URL = import.meta.env.PROD
   ? 'https://baseball-dfs-sims.fly.dev'
   : '/api';
 
+const PROJ_PREFIX = import.meta.env.VITE_USE_STAGING === 'true'
+  ? '/staging/projections'
+  : '/projections';
+
 const DEFAULT_TIMEOUT = 30000;
 const LONG_TIMEOUT = 300000;
 
@@ -53,7 +57,7 @@ export const api = {
   getSlates: (site = 'dk', date) => {
     const params = new URLSearchParams({ site });
     if (date) params.set('target_date', date);
-    return fetchApi(`/projections/slates?${params}`);
+    return fetchApi(`${PROJ_PREFIX}/slates?${params}`);
   },
   getSlateHistory: (days = 30, site = 'dk') => {
     const params = new URLSearchParams({ days: String(days), site });
@@ -62,12 +66,12 @@ export const api = {
   getFeaturedProjections: (site = 'dk', date) => {
     const params = new URLSearchParams({ site });
     if (date) params.set('target_date', date);
-    return fetchApi(`/projections/slates/featured/projections?${params}`);
+    return fetchApi(`${PROJ_PREFIX}/slates/featured/projections?${params}`);
   },
   getSlateProjections: (slateId, site = 'dk', date) => {
     const params = new URLSearchParams({ site });
     if (date) params.set('target_date', date);
-    return fetchApi(`/projections/slates/${slateId}/projections?${params}`);
+    return fetchApi(`${PROJ_PREFIX}/slates/${slateId}/projections?${params}`);
   },
   updateProjection: (projId, data) => fetchApi(`/projections/${projId}`, { method: 'PATCH', body: JSON.stringify(data) }),
 
@@ -84,9 +88,25 @@ export const api = {
   exportLineups: (lineupIds, site) => fetchApi(`/lineups/export/dk`, { method: 'GET' }),
 
   // Simulator
-  runSimulation: (config, signal) => fetchApi('/simulations/', { method: 'POST', body: JSON.stringify(config), signal, timeout: LONG_TIMEOUT }),
   runInlineSimulation: (config, signal) => fetchApi('/simulations/run-inline', { method: 'POST', body: JSON.stringify(config), signal, timeout: LONG_TIMEOUT }),
-  getSimStatus: (simId) => fetchApi(`/simulations/${simId}`),
+  runContestSim: (config, signal) => fetchApi('/simulations/contest-sim', { method: 'POST', body: JSON.stringify(config), signal, timeout: LONG_TIMEOUT }),
+  runPortfolioSim: (config, signal) => fetchApi('/simulations/portfolio-sim', { method: 'POST', body: JSON.stringify(config), signal, timeout: LONG_TIMEOUT }),
+  assignLineups: (contestId, assignments) => fetchApi('/simulations/assign-lineups', { method: 'POST', body: JSON.stringify({ contest_id: contestId, assignments }) }),
+  updateEntryLineup: (contestId, entryId, lineupIndex) => fetchApi('/simulations/update-entry', { method: 'POST', body: JSON.stringify({ contest_id: contestId, entry_id: entryId, lineup_index: lineupIndex }) }),
+  getSimResults: (contestId) => fetchApi(`/simulations/results/${contestId}`),
+  exportSimCSV: (contestId) => {
+    const url = `${BASE_URL}/simulations/export-csv?contest_id=${contestId}`;
+    return fetch(url).then(r => {
+      if (!r.ok) throw new Error(`Export failed: ${r.status}`);
+      return r.text();
+    });
+  },
+  exportAllCSV: () => {
+    return fetch(`${BASE_URL}/simulations/export-all-csv`, { method: 'POST' }).then(r => {
+      if (!r.ok) throw new Error(`Export failed: ${r.status}`);
+      return r.text();
+    });
+  },
 
   // Games
   getGames: (date) => fetchApi(`/games?date=${date}`),
@@ -106,15 +126,16 @@ export const api = {
     const qs = params.toString();
     return fetchApi(`/projections/lineups/status${qs ? '?' + qs : ''}`);
   },
-  getGameLineups: (forceRefresh = false, site = 'dk', date = null) => {
+  getGameLineups: (forceRefresh = false, site = 'dk', date = null, slateId = null) => {
     const params = new URLSearchParams();
     if (forceRefresh) params.set('force_refresh', 'true');
     if (site) params.set('site', site);
     if (date) params.set('target_date', date);
+    if (slateId) params.set('slate_id', slateId);
     const qs = params.toString();
-    return fetchApi(`/projections/lineups/games${qs ? '?' + qs : ''}`);
+    return fetchApi(`${PROJ_PREFIX}/lineups/games${qs ? '?' + qs : ''}`);
   },
-  getLiveScores: () => fetchApi('/projections/lineups/games/live'),
+  getLiveScores: () => fetchApi(`${PROJ_PREFIX}/lineups/games/live`),
 
   // DK Entries
   uploadDkEntries: async (file) => {

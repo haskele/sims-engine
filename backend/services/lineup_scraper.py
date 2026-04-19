@@ -4,7 +4,7 @@ Fetches data from external lineup sources (primary + fallback) to determine
 which players are in confirmed/expected starting lineups and who is the
 starting pitcher for each team.
 
-For today's games, uses Baseball Monster (primary) + RotOwire (fallback)
+For today's games, uses RotoGrinders (primary) + RotOwire (fallback)
 which provide confirmed batting orders.
 
 For future dates, uses the MLB Stats API to get probable pitchers (batting
@@ -24,24 +24,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
+from services.constants import DK_TEAM_ALIAS as _TEAM_ALIAS
 from services.name_matching import names_match as _central_names_match
 from services.name_matching import canonical_name, find_in_dict as _central_find_in_dict
 
 logger = logging.getLogger(__name__)
-
-# Team abbreviation normalisation (source → our standard)
-_TEAM_ALIAS = {
-    # Source-specific aliases
-    "WAS": "WSH", "CHW": "CWS",
-    # Standard aliases (identity mappings for safety)
-    "WSH": "WSH", "CWS": "CWS",
-    # Athletics rebrand
-    "ATH": "OAK", "A'S": "OAK",
-    # Giants
-    "SFG": "SF",
-    # MLB Stats API uses "AZ" for Arizona
-    "AZ": "ARI",
-}
 
 _FUTURE_CACHE_TTL = 600  # 10 minutes for future dates (less volatile)
 
@@ -67,6 +54,7 @@ class TeamLineup:
     team: str
     status: str = "unknown"  # "confirmed", "expected", "unknown"
     pitcher: Optional[PlayerLineup] = None
+    long_reliever: Optional[PlayerLineup] = None  # PLR when pitcher is an opener
     batters: List[PlayerLineup] = field(default_factory=list)
     last_checked: Optional[str] = None
 
@@ -99,14 +87,14 @@ def _normalise_name(name: str) -> str:
     return name
 
 
-# ── Primary lineup source ───────────────────────────────────────────────────
+# ── Primary lineup source: RotoGrinders ────────────────────────────────────
 
 
 async def _fetch_primary_source() -> str:
-    """Fetch the primary lineups page."""
+    """Fetch the RotoGrinders MLB lineups page."""
     async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
         resp = await client.get(
-            "https://baseballmonster.com/lineups.aspx",
+            "https://rotogrinders.com/lineups/mlb",
             headers={
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                               "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -118,145 +106,138 @@ async def _fetch_primary_source() -> str:
 
 
 def _parse_primary_source(html: str) -> List[GameLineup]:
-    """Parse the primary lineup page into structured data.
+    """Parse the RotoGrinders lineup page into structured data.
 
-    Structure:
-    - Games split by <div class='lineup-holder'>
-    - Each holder has two <td> blocks (away, home)
-    - Team: TEAM&#160;&#160; header
-    - Batters: <tr class='lineup-starting'> rows with order/name/hand/position
-    - Pitcher: <tr> (no class) with SP in position cell
-    - Confirmed: "VERIFIED LINEUP" after lineup table
-    - Expected: "Lineup Expected" after lineup table
+    Structure per game:
+    - Game cards: <div class="module game-card">
+    - Teams: <span ... data-abbr="SFG"> (away first, home second)
+    - Confirmed: lineup-card-body without "unconfirmed" class
+    - Unconfirmed: lineup-card-body with "unconfirmed" class
+    - Pitcher: inside <div class="lineup-card-pitcher ...">
+    - Batters: <li class="lineup-card-player"> with order number and name
     """
     games: List[GameLineup] = []
-
-    # Split into game blocks by lineup-holder divs
-    blocks = re.split(r"<div\s+class=['\"]lineup-holder['\"]>", html)
-    if len(blocks) < 2:
-        logger.warning("Primary source: no lineup-holder blocks found")
-        return games
-
-    # First block is page header/nav — skip it
     now_str = datetime.now(timezone.utc).isoformat()
 
-    for block in blocks[1:]:
-        game = _parse_bm_game_block(block, now_str)
+    cards = re.split(r'class="module game-card"', html)
+    if len(cards) < 2:
+        logger.warning("RotoGrinders: no game-card blocks found")
+        return games
+
+    for card_html in cards[1:]:
+        game = _parse_rg_game_card(card_html, now_str)
         if game:
             games.append(game)
 
-    logger.info("Primary source: parsed %d games", len(games))
+    logger.info("RotoGrinders: parsed %d games", len(games))
     return games
 
 
-def _parse_bm_game_block(block: str, timestamp: str) -> Optional[GameLineup]:
-    """Parse a single game block from the primary source.
-
-    Each block has two <td valign='top'> sections -- away (first) and home (second).
-    """
-    # Extract team abbreviations from bold headers:
-    # Away: font-weight: bold;'>TEAM&#160;  or  font-weight: bold;'>TEAM (8)&#160;
-    # Home: font-weight: bold;'>@&#160;TEAM&#160;  or  font-weight: bold;'>@ TEAM&#160;
-    team_headers = re.findall(
-        r"font-weight:\s*bold;'>\s*@?\s*(?:&#160;)?\s*([A-Z]{2,3})",
-        block,
-    )
-    if len(team_headers) < 2:
-        # Fallback: try the old format
-        team_headers = re.findall(r"([A-Z]{2,3})(?:\s*\(\d+\))?(?:&#160;)+", block)
-    if len(team_headers) < 2:
+def _parse_rg_game_card(card_html: str, timestamp: str) -> Optional[GameLineup]:
+    """Parse a single RotoGrinders game card."""
+    teams = re.findall(r'data-abbr="([A-Z]{2,3})"', card_html)
+    if len(teams) < 2:
         return None
 
-    away_abbr = _normalise_team(team_headers[0])
-    home_abbr = _normalise_team(team_headers[1])
+    away_abbr = _normalise_team(teams[0])
+    home_abbr = _normalise_team(teams[1])
 
-    # Split the block into away/home halves at the second <td valign='top'>
-    td_splits = re.split(
-        r"</td>\s*<td\s+valign=['\"]top['\"]",
-        block,
-        maxsplit=1,
-    )
-    away_html = td_splits[0] if len(td_splits) >= 1 else ""
-    home_html = td_splits[1] if len(td_splits) >= 2 else ""
+    game_time = ""
+    time_match = re.search(r'<span class="small">(\d+:\d+ [AP]M ET)</span>', card_html)
+    if time_match:
+        game_time = time_match.group(1)
 
-    game = GameLineup(
-        away=_parse_bm_team_section(away_html, away_abbr),
-        home=_parse_bm_team_section(home_html, home_abbr),
-    )
-    game.away.last_checked = timestamp
-    game.home.last_checked = timestamp
-    return game
+    lineup_cards = re.split(r'class="lineup-card"', card_html)
+    away_lineup = TeamLineup(team=away_abbr, last_checked=timestamp)
+    home_lineup = TeamLineup(team=home_abbr, last_checked=timestamp)
 
+    if len(lineup_cards) >= 2:
+        away_lineup = _parse_rg_lineup_card(lineup_cards[1], away_abbr, timestamp)
+    if len(lineup_cards) >= 3:
+        home_lineup = _parse_rg_lineup_card(lineup_cards[2], home_abbr, timestamp)
 
-def _extract_name_hand(raw: str) -> tuple[str, str]:
-    """Extract player name and handedness (L/R/S) from a raw string."""
-    raw = re.sub(r"<[^>]+>", "", raw).strip()
-    raw = re.sub(r"\s*\([A-Z]\)\s*", " ", raw).strip()
-    hand_match = re.search(r"\s+([LRS])\s*$", raw)
-    hand = hand_match.group(1) if hand_match else ""
-    name = raw[:hand_match.start()].strip() if hand_match else raw.strip()
-    return name, hand
+    return GameLineup(away=away_lineup, home=home_lineup, game_time=game_time)
 
 
-def _parse_bm_team_section(html: str, team: str) -> TeamLineup:
-    """Parse one team's lineup from a primary source HTML section."""
-    lineup = TeamLineup(team=team)
+def _parse_rg_lineup_card(card_html: str, team: str, timestamp: str) -> TeamLineup:
+    """Parse one team's lineup card from RotoGrinders."""
+    lineup = TeamLineup(team=team, last_checked=timestamp)
 
-    # Status: VERIFIED LINEUP, Lineup Expected, or Lineup Overdue
-    if re.search(r"VERIFIED\s+LINEUP", html, re.IGNORECASE):
+    # Status: "unconfirmed" class on lineup-card-body means not confirmed
+    if re.search(r'lineup-card-body\s+unconfirmed', card_html):
+        lineup.status = "expected"
+    else:
         lineup.status = "confirmed"
-    elif re.search(r"Lineup\s+Expected", html, re.IGNORECASE):
-        lineup.status = "expected"
-    elif re.search(r"Lineup\s+Overdue", html, re.IGNORECASE):
-        lineup.status = "expected"
 
-    # Batters: rows with a batting order number (1-9) in the first cell.
-    # Handles both old format (<tr class='lineup-starting'>) and new format
-    # (<tr class=''> or <tr class='lineup-starting'>).
-    batter_pattern = re.compile(
-        r"<tr[^>]*>\s*"
-        r"<td[^>]*>(\d)</td>\s*"                              # batting order
-        r"<td[^>]*>(.*?)</td>\s*"                              # name + hand
-        r"<td[^>]*>\s*(?:<span[^>]*>)?([\w/]+)(?:</span>)?\s*</td>",  # position
-        re.IGNORECASE | re.DOTALL,
+    # Pitcher: inside lineup-card-pitcher div
+    pitcher_match = re.search(
+        r'class="lineup-card-pitcher[^"]*".*?'
+        r'class="player-nameplate-name"[^>]*>([^<]+)</a>'
+        r'.*?<span class="small">\(([LRS])\)</span>'
+        r'.*?<span class="small muted">(\w+)</span>',
+        card_html,
+        re.DOTALL,
     )
-    for m in batter_pattern.finditer(html):
-        order = int(m.group(1))
-        if order < 1 or order > 9:
-            continue
-        pos = m.group(3).strip().upper()
-        if pos == "SP":
-            continue  # Skip pitcher row that might match
-        name, hand = _extract_name_hand(m.group(2))
-        if not name:
+    if pitcher_match:
+        lineup.pitcher = PlayerLineup(
+            name=pitcher_match.group(1).strip(),
+            team=team,
+            position="P",
+            is_pitcher=True,
+            handedness=pitcher_match.group(2),
+        )
+
+    # Probable Long Reliever (PLR): appears in lineup-card-reliever div
+    plr_match = re.search(
+        r'class="lineup-card-reliever[^"]*".*?'
+        r'class="player-nameplate-name"[^>]*>([^<]+)</a>'
+        r'(?:.*?<span class="small">\(([LRS])\)</span>)?',
+        card_html,
+        re.DOTALL,
+    )
+    if plr_match:
+        plr_name = plr_match.group(1).strip()
+        plr_hand = plr_match.group(2) or ""
+        lineup.long_reliever = PlayerLineup(
+            name=plr_name,
+            team=team,
+            position="RP",
+            is_pitcher=True,
+            handedness=plr_hand,
+        )
+
+    # Batters: each <li class="lineup-card-player"> contains order + name
+    batter_pattern = re.compile(
+        r'class="lineup-card-player">'
+        r'\s*<span[^>]*data-position="([^"]*)"[^>]*>'
+        r'\s*<span class="small">(\d+)</span>'
+        r'.*?class="player-nameplate-name"[^>]*>([^<]+)</a>'
+        r'.*?<span class="small">\(([LRS])\)</span>'
+        r'.*?<span class="small muted">(\w+(?:/\w+)?)</span>',
+        re.DOTALL,
+    )
+    for m in batter_pattern.finditer(card_html):
+        dk_position = m.group(1).strip()
+        order = int(m.group(2))
+        name = m.group(3).strip()
+        hand = m.group(4)
+        display_position = m.group(5).strip().upper()
+
+        if display_position == "SP":
             continue
 
         lineup.batters.append(PlayerLineup(
             name=name,
             team=team,
-            position=pos,
+            position=display_position,
             batting_order=order,
             handedness=hand,
         ))
 
-    # Pitcher: row with SP position and non-numeric first cell (&#160; or empty)
-    sp_pattern = re.compile(
-        r"<tr[^>]*>\s*<td[^>]*>(?:&#160;|\s)*</td>\s*"   # spacer cell (only &#160; or whitespace)
-        r"<td[^>]*>(.*?)</td>\s*"                          # name + hand
-        r"<td[^>]*>\s*(?:<span[^>]*>)?SP(?:</span>)?\s*</td>",  # SP position
-        re.IGNORECASE | re.DOTALL,
-    )
-    sp_match = sp_pattern.search(html)
-    if sp_match:
-        name, hand = _extract_name_hand(sp_match.group(1))
-        if name:
-            lineup.pitcher = PlayerLineup(
-                name=name,
-                team=team,
-                position="P",
-                is_pitcher=True,
-                handedness=hand,
-            )
+    # If no batters were found, the lineup hasn't actually been posted.
+    # Override status to "unknown" regardless of what RotoGrinders markup says.
+    if not lineup.batters:
+        lineup.status = "unknown"
 
     return lineup
 
@@ -458,14 +439,22 @@ async def fetch_lineups(
         target_date: Date in YYYY-MM-DD format. None means today.
 
     Routing logic:
-    - Today (or None): use Baseball Monster (primary) + RotOwire (fallback)
+    - Today (or None): use RotoGrinders (primary) + RotOwire (fallback)
       for confirmed batting orders.  Cache TTL: 90 seconds.
     - Future date: use MLB Stats API for probable pitchers (no batting
       orders — those come from CSV projections).  Cache TTL: 10 minutes.
     """
-    today_str = date.today().isoformat()
+    try:
+        from zoneinfo import ZoneInfo
+        _et = ZoneInfo("America/New_York")
+    except ImportError:
+        _et = timezone(timedelta(hours=-4))
+    now_et = datetime.now(_et)
+    today_str = now_et.date().isoformat()
+    yesterday_str = (now_et.date() - timedelta(days=1)).isoformat()
     date_str = target_date or today_str
-    is_today = date_str == today_str
+    # Use live scraper for today AND yesterday (games can run past midnight ET)
+    is_today = date_str in (today_str, yesterday_str)
 
     cache_key = f"lineups-{date_str}"
     ttl = _CACHE_TTL if is_today else _FUTURE_CACHE_TTL

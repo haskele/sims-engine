@@ -5,11 +5,12 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
 from database import create_tables
+from services.scheduler import scheduler
 
 # ── Logging ─────────────────────────────────────────────────────────────────
 
@@ -35,8 +36,13 @@ async def lifespan(app: FastAPI):
     await create_tables()
     logger.info("Database tables created")
 
+    # Start the unified scheduler (replaces the old nightly_projection_task)
+    await scheduler.start()
+    logger.info("Scheduler started with intraday refresh jobs")
+
     yield
 
+    await scheduler.stop()
     logger.info("Shutting down")
 
 
@@ -72,6 +78,7 @@ from api.games import router as games_router
 from api.data_pipeline import router as pipeline_router
 from api.dk_entries import router as dk_entries_router
 from api.contest_history import router as contest_history_router
+from api.staging_projections import router as staging_router
 
 app.include_router(contests_router)
 app.include_router(players_router)
@@ -82,6 +89,7 @@ app.include_router(games_router)
 app.include_router(pipeline_router)
 app.include_router(dk_entries_router)
 app.include_router(contest_history_router)
+app.include_router(staging_router)
 
 
 # ── Health check ────────────────────────────────────────────────────────────
@@ -99,3 +107,35 @@ async def root():
         "docs": "/docs",
         "health": "/health",
     }
+
+
+# ── Admin scheduler endpoints ──────────────────────────────────────────────
+
+
+@app.get("/admin/scheduler/status", tags=["admin"])
+async def scheduler_status():
+    """Show status of all scheduler jobs: last_run, next_run, enabled, errors."""
+    return scheduler.get_status()
+
+
+@app.post("/admin/scheduler/{job_name}/trigger", tags=["admin"])
+async def scheduler_trigger(job_name: str):
+    """Manually trigger a scheduler job by name."""
+    if job_name not in scheduler.jobs:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown job '{job_name}'. Available: {list(scheduler.jobs.keys())}",
+        )
+    result = await scheduler.trigger_job(job_name)
+    return result
+
+
+@app.post("/admin/scheduler/{job_name}/enable", tags=["admin"])
+async def scheduler_enable(job_name: str, enabled: bool = True):
+    """Enable or disable a scheduler job."""
+    if not scheduler.set_job_enabled(job_name, enabled):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown job '{job_name}'. Available: {list(scheduler.jobs.keys())}",
+        )
+    return {"job": job_name, "enabled": enabled}

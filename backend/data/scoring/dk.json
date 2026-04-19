@@ -1,0 +1,15 @@
+{
+  "site": "dk",
+  "name": "DraftKings Classic MLB",
+  "hitter": {
+    "single": 3, "double": 5, "triple": 8, "homeRun": 10,
+    "rbi": 2, "run": 2, "baseOnBalls": 2, "hitByPitch": 2,
+    "stolenBase": 5, "caughtStealing": 0
+  },
+  "pitcher": {
+    "win": 4, "earnedRun": -2, "strikeOut": 2,
+    "inningsPitched": 2.25, "hitAllowed": -0.6,
+    "baseOnBallsAllowed": -0.6, "hitByPitchAllowed": -0.6,
+    "completeGame": 2.5, "completeGameShutout": 2.5, "noHitter": 5
+  }
+}

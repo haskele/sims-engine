@@ -1,20 +1,19 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 
-export default function StackControl({ team, onChange }) {
+export default function StackControl({ team, value, onChange }) {
   const [expanded, setExpanded] = useState(false);
-  const [stacks, setStacks] = useState({
-    '3man': { min: 0, max: 100 },
-    '4man': { min: 0, max: 100 },
-    '5man': { min: 0, max: 100 },
-  });
+  const stacks = {
+    '3man': { min: value?.stack_3?.min ?? 0, max: value?.stack_3?.max ?? 100 },
+    '4man': { min: value?.stack_4?.min ?? 0, max: value?.stack_4?.max ?? 100 },
+    '5man': { min: value?.stack_5?.min ?? 0, max: value?.stack_5?.max ?? 100 },
+  };
 
-  const handleChange = (stackType, field, value) => {
+  const handleChange = (stackType, field, val) => {
     const updated = {
       ...stacks,
-      [stackType]: { ...stacks[stackType], [field]: Number(value) },
+      [stackType]: { ...stacks[stackType], [field]: Math.max(0, Math.min(100, Number(val) || 0)) },
     };
-    setStacks(updated);
     onChange?.(updated);
   };
 
@@ -29,7 +28,15 @@ export default function StackControl({ team, onChange }) {
         </div>
         <div className="flex items-center gap-2">
           <span className="text-[10px] font-mono text-gray-500">
-            {stacks['4man'].min > 0 ? `4+ min:${stacks['4man'].min}%` : 'no constraints'}
+            {(() => {
+              const parts = [];
+              for (const [key, label] of [['3man', '3+'], ['4man', '4+'], ['5man', '5+']]) {
+                if (stacks[key].min > 0 || stacks[key].max < 100) {
+                  parts.push(`${label}:${stacks[key].min}-${stacks[key].max}%`);
+                }
+              }
+              return parts.length > 0 ? parts.join(', ') : 'no constraints';
+            })()}
           </span>
           {expanded ? (
             <ChevronUp className="w-3.5 h-3.5 text-gray-500" />

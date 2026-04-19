@@ -100,11 +100,13 @@ class CSVOptimizeRequest(BaseModel):
     stack_exposures: Dict[str, TeamStackConfig] = {}  # team_abbr -> stack config
     objective: str = "median_pts"
     target_date: Optional[str] = None
+    slate_id: Optional[str] = None
     variance: float = 0.15  # 0.0 = no variance, 1.0 = max variance
     skew: str = "neutral"   # "neutral", "ceiling", "floor"
+    min_salary: Optional[int] = None  # minimum total salary floor
 
     def validated_n_lineups(self) -> int:
-        return min(max(self.n_lineups, 1), 500)
+        return min(max(self.n_lineups, 1), 10000)
 
 
 class LateSwapPlayer(BaseModel):
@@ -286,24 +288,31 @@ async def optimize_lineups(
 async def optimize_lineups_csv(body: CSVOptimizeRequest):
     """Generate optimised lineups from CSV-based projections.
 
-    Loads projections from the featured CSV slate for the given date/site,
-    builds a PuLP player pool, and runs the optimizer with exposure limits.
+    Loads projections from the selected or featured CSV slate for the given
+    date/site, builds a PuLP player pool, and runs the optimizer.
     """
     try:
         d = date.fromisoformat(body.target_date) if body.target_date else date.today()
     except ValueError:
         raise HTTPException(400, "Invalid date format, use YYYY-MM-DD")
 
-    # Load CSV projections
+    # Load CSV projections — use specific slate if provided, otherwise featured
     csv_slates = list_csv_slates(target_date=d, site=body.site)
     if not csv_slates:
         raise HTTPException(400, "No CSV projection files found for this date/site")
 
-    featured = identify_featured_csv_slate(csv_slates)
-    if not featured or not featured.get("csv_path"):
-        raise HTTPException(400, "No featured slate found")
+    chosen_slate = None
+    if body.slate_id:
+        for cs in csv_slates:
+            if cs["slate_id"] == body.slate_id:
+                chosen_slate = cs
+                break
+    if not chosen_slate:
+        chosen_slate = identify_featured_csv_slate(csv_slates)
+    if not chosen_slate or not chosen_slate.get("csv_path"):
+        raise HTTPException(400, "No matching slate found")
 
-    projections = load_csv_projections(featured["csv_path"], body.site)
+    projections = load_csv_projections(chosen_slate["csv_path"], body.site)
     if not projections:
         raise HTTPException(400, "No projections loaded from CSV")
 
@@ -408,6 +417,7 @@ async def optimize_lineups_csv(body: CSVOptimizeRequest):
         variance=variance,
         skew=skew,
         stack_exposures=stack_exposures if stack_exposures else None,
+        min_salary=body.min_salary,
     )
 
     # Enrich lineup results with dk_id for export

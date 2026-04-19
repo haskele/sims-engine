@@ -75,6 +75,12 @@ from typing import Any
 
 import numpy as np
 
+from services.engines.engine_v1 import (
+    compute_field_sharpness,
+    get_archetype_mix,
+    get_ownership_params,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -124,14 +130,10 @@ def generate_opponent_field(
     salary_cap = 50000 if site == "dk" else 35000
     slots = list(DK_ROSTER_SLOTS if site == "dk" else FD_ROSTER_SLOTS)
 
-    # ── Archetype mix (v1: simple proportions based on entry fee) ──
-    entry_fee = contest_config.get("entry_fee", 20)
-    if entry_fee <= 5:
-        casual_pct, optimizer_pct, sharp_pct = 0.60, 0.30, 0.10
-    elif entry_fee <= 25:
-        casual_pct, optimizer_pct, sharp_pct = 0.40, 0.35, 0.25
-    else:
-        casual_pct, optimizer_pct, sharp_pct = 0.20, 0.35, 0.45
+    # ── Engine v1: contest-aware archetype mix ──
+    sharpness = compute_field_sharpness(contest_config)
+    casual_pct, optimizer_pct, sharp_pct = get_archetype_mix(sharpness)
+    params = get_ownership_params(sharpness)
 
     n_casual = int(n_lineups * casual_pct)
     n_optimizer = int(n_lineups * optimizer_pct)
@@ -139,19 +141,28 @@ def generate_opponent_field(
 
     lineups: list[list[dict[str, Any]]] = []
 
-    # Generate each archetype
     for _ in range(n_casual):
-        lu = _build_casual_lineup(player_pool, slots, salary_cap)
+        lu = _build_casual_lineup(
+            player_pool, slots, salary_cap,
+            ownership_power=params["casual_ownership_power"],
+            noise=params["casual_noise"],
+        )
         if lu:
             lineups.append(lu)
 
     for _ in range(n_optimizer):
-        lu = _build_optimizer_lineup(player_pool, slots, salary_cap)
+        lu = _build_optimizer_lineup(
+            player_pool, slots, salary_cap,
+            noise=params["optimizer_noise"],
+        )
         if lu:
             lineups.append(lu)
 
     for _ in range(n_sharp):
-        lu = _build_sharp_lineup(player_pool, slots, salary_cap, game_slate)
+        lu = _build_sharp_lineup(
+            player_pool, slots, salary_cap, game_slate,
+            noise=params["sharp_noise"],
+        )
         if lu:
             lineups.append(lu)
 
@@ -174,6 +185,68 @@ def generate_opponent_field(
     return lineups[:n_lineups]
 
 
+def generate_ownership_field(
+    player_pool: list[dict[str, Any]],
+    n_lineups: int,
+    variance: float = 0.3,
+    site: str = "dk",
+    contest_config: dict[str, Any] | None = None,
+) -> list[list[dict[str, Any]]]:
+    """Generate opponent lineups using ownership-weighted selection with variance.
+
+    When contest_config is provided, engine_v1 computes sharpness-adjusted
+    ownership power and noise. Otherwise falls back to defaults.
+    """
+    from config import DK_ROSTER_SLOTS, FD_ROSTER_SLOTS
+
+    salary_cap = 50000 if site == "dk" else 35000
+    slots = list(DK_ROSTER_SLOTS if site == "dk" else FD_ROSTER_SLOTS)
+
+    if contest_config:
+        sharpness = compute_field_sharpness(contest_config)
+        params = get_ownership_params(sharpness)
+        own_power = params["casual_ownership_power"]
+        own_noise = params["casual_noise"]
+        effective_variance = params["ownership_variance"]
+    else:
+        own_power = 1.2
+        own_noise = 0.15
+        effective_variance = variance
+
+    lineups: list[list[dict[str, Any]]] = []
+    for _ in range(n_lineups):
+        perturbed = []
+        for p in player_pool:
+            pp = dict(p)
+            base_own = max(p.get("projected_ownership", 1.0), 0.1)
+            if effective_variance > 0:
+                noise_factor = max(0.01, 1.0 + np.random.normal(0, effective_variance))
+                pp["projected_ownership"] = base_own * noise_factor
+            perturbed.append(pp)
+
+        lu = _ownership_weighted_build(
+            perturbed, slots, salary_cap, ownership_power=own_power, noise=own_noise
+        )
+        if lu:
+            lineups.append(lu)
+
+    attempts = 0
+    while len(lineups) < n_lineups and attempts < n_lineups * 2:
+        lu = _ownership_weighted_build(
+            player_pool, slots, salary_cap, ownership_power=own_power + 0.3, noise=own_noise + 0.15
+        )
+        if lu:
+            lineups.append(lu)
+        attempts += 1
+
+    logger.info(
+        "Generated ownership field: %d lineups (variance=%.2f, sharpness=%s)",
+        len(lineups), effective_variance,
+        f"{compute_field_sharpness(contest_config):.2f}" if contest_config else "n/a",
+    )
+    return lineups[:n_lineups]
+
+
 # ── Archetype builders ──────────────────────────────────────────────────────
 
 
@@ -181,14 +254,12 @@ def _build_casual_lineup(
     players: list[dict[str, Any]],
     slots: list[str],
     salary_cap: int,
+    ownership_power: float = 1.5,
+    noise: float = 0.4,
 ) -> list[dict[str, Any]] | None:
-    """Casual single-entry player: ownership-weighted, imperfect salary usage.
-
-    Casuals tend to pick recognisable names (correlated with ownership and
-    salary), don't optimise salary perfectly, and rarely stack intentionally.
-    """
+    """Casual single-entry player: ownership-weighted, imperfect salary usage."""
     return _ownership_weighted_build(
-        players, slots, salary_cap, ownership_power=1.5, noise=0.4
+        players, slots, salary_cap, ownership_power=ownership_power, noise=noise
     )
 
 
@@ -196,13 +267,10 @@ def _build_optimizer_lineup(
     players: list[dict[str, Any]],
     slots: list[str],
     salary_cap: int,
+    noise: float = 0.1,
 ) -> list[dict[str, Any]] | None:
-    """Optimizer-duplicate player: value-ranked, tight salary usage.
-
-    These are the cookie-cutter "run an optimizer and submit" builds.
-    Very high projected points, use most of the salary cap.
-    """
-    return _value_weighted_build(players, slots, salary_cap, noise=0.1)
+    """Optimizer-duplicate player: value-ranked, tight salary usage."""
+    return _value_weighted_build(players, slots, salary_cap, noise=noise)
 
 
 def _build_sharp_lineup(
@@ -210,12 +278,9 @@ def _build_sharp_lineup(
     slots: list[str],
     salary_cap: int,
     game_slate: list[dict[str, Any]],
+    noise: float = 0.15,
 ) -> list[dict[str, Any]] | None:
-    """Sharp multi-entry player: leverage-aware, stacking, diversified.
-
-    Sharps intentionally stack hitters from high-implied-run teams and bring
-    back opposing batters.  They also fade very high ownership.
-    """
+    """Sharp multi-entry player: leverage-aware, stacking, diversified."""
     # Pick a stack team: weight by implied runs
     team_implied: dict[str, float] = {}
     for g in game_slate:
@@ -227,7 +292,7 @@ def _build_sharp_lineup(
             team_implied[at] = g.get("away_implied") or 4.5
 
     if not team_implied:
-        return _value_weighted_build(players, slots, salary_cap, noise=0.2)
+        return _value_weighted_build(players, slots, salary_cap, noise=noise)
 
     # Weight stacking toward high-implied teams (non-linear: cube of implied)
     teams = list(team_implied.keys())
@@ -248,9 +313,8 @@ def _build_sharp_lineup(
     # Sort by batting order / projection
     stack_players.sort(key=lambda p: p.get("median_pts", 0), reverse=True)
 
-    # Build with stack preference
     return _stacked_build(
-        players, slots, salary_cap, stack_players[:stack_size * 2], stack_size, noise=0.15
+        players, slots, salary_cap, stack_players[:stack_size * 2], stack_size, noise=noise
     )
 
 

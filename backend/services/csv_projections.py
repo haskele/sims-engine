@@ -22,6 +22,13 @@ _CSV_DIRS = [
     Path("/app/data/projections"),                                    # Fly.io volume
 ]
 
+_SALARY_DIRS = [
+    Path(__file__).resolve().parent.parent / "dk-salaries",          # backend/dk-salaries (Docker)
+    Path(__file__).resolve().parent.parent.parent / "dk salaries ",  # local dev (trailing space in folder name)
+    Path(__file__).resolve().parent.parent.parent / "dk salaries",   # local dev (no trailing space)
+    Path("/app/data/dk-salaries"),                                    # Fly.io volume
+]
+
 
 def _find_csv_dir() -> Optional[Path]:
     """Find the directory containing projection CSVs."""
@@ -205,10 +212,13 @@ def load_csv_projections(
                         # Skip the pitcher filter below so he stays in the pool
                     # else: he is a starting pitcher, keep as-is
 
-                # Filter: non-starting pitchers (relievers)
+                # Filter pitchers: keep if starter (IP >= 3) OR (median > 3 pts AND ownership >= 1%)
                 if proj["is_pitcher"]:
                     ip = _safe_float(row.get("IP"), 0.0)
-                    if ip is not None and ip < 3.0:
+                    ownership = proj.get("projected_ownership", 0) or 0
+                    is_starter = ip is not None and ip >= 3.0
+                    has_value = proj["median_pts"] >= 3.0 and ownership >= 1.0
+                    if not is_starter and not has_value:
                         continue
 
                 projections.append(proj)
@@ -336,3 +346,81 @@ def _safe_int(val: Optional[str]) -> Optional[int]:
         return int(float(val))
     except (ValueError, TypeError):
         return None
+
+
+def _find_salary_dir() -> Optional[Path]:
+    for d in _SALARY_DIRS:
+        if d.exists() and any(d.glob("*.csv")):
+            return d
+    return None
+
+
+def load_dk_salaries(
+    target_date: Optional[date] = None,
+    slate_name: str = "main",
+) -> Dict[str, Dict[str, Any]]:
+    """Load DK salary CSV and return a lookup: player_name -> {salary, dk_id, team, position, avg_pts}.
+
+    The DK salary CSV has columns:
+    Position, Name + ID, Name, ID, Roster Position, Salary, Game Info, TeamAbbrev, AvgPointsPerGame
+    """
+    sal_dir = _find_salary_dir()
+    if not sal_dir:
+        return {}
+
+    d = target_date or date.today()
+    date_str = d.isoformat().replace("-", "")
+
+    # Find matching file — look for date and slate name in filename
+    best_file = None
+    for f in sorted(sal_dir.glob("*.csv"), key=lambda x: x.stat().st_mtime, reverse=True):
+        fname_lower = f.name.lower()
+        # Match by date fragments (e.g. "apr 17" or "04-17" or "0417")
+        month_names = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+        month_name = month_names[d.month - 1]
+        date_patterns = [
+            f"{month_name} {d.day}",
+            f"{d.month:02d}-{d.day:02d}",
+            f"{d.month:02d}{d.day:02d}",
+            date_str[4:],
+        ]
+        date_match = any(p in fname_lower for p in date_patterns)
+        slate_match = slate_name.lower() in fname_lower
+        if date_match and slate_match:
+            best_file = f
+            break
+        if date_match and best_file is None:
+            best_file = f
+
+    if not best_file:
+        logger.info("No DK salary CSV found for %s (%s)", d, slate_name)
+        return {}
+
+    result: Dict[str, Dict[str, Any]] = {}
+    try:
+        with open(best_file, "r", encoding="utf-8-sig") as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                name = row.get("Name", "").strip()
+                if not name:
+                    continue
+                salary = _safe_int(row.get("Salary"))
+                dk_id = _safe_int(row.get("ID"))
+                team = row.get("TeamAbbrev", "").strip()
+                position = row.get("Position", "").strip()
+                roster_pos = row.get("Roster Position", "").strip()
+                avg_pts = _safe_float(row.get("AvgPointsPerGame"))
+                if salary and salary > 0:
+                    result[name] = {
+                        "salary": salary,
+                        "dk_id": dk_id,
+                        "team": team,
+                        "position": position,
+                        "roster_position": roster_pos,
+                        "avg_pts": avg_pts or 0.0,
+                    }
+    except Exception as exc:
+        logger.error("Failed to load DK salary CSV %s: %s", best_file, exc)
+
+    logger.info("Loaded %d DK salaries from %s", len(result), best_file.name)
+    return result

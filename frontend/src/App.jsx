@@ -1,5 +1,5 @@
 import { Component } from 'react'
-import { Routes, Route } from 'react-router-dom'
+import { Routes, Route, Navigate } from 'react-router-dom'
 import { AppProvider } from './context/AppContext'
 import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
@@ -18,6 +18,10 @@ class ErrorBoundary extends Component {
     return { hasError: true, error };
   }
 
+  componentDidCatch(error, errorInfo) {
+    console.error('ErrorBoundary caught:', error, errorInfo);
+  }
+
   render() {
     if (this.state.hasError) {
       return (
@@ -27,16 +31,25 @@ class ErrorBoundary extends Component {
             <p className="text-sm text-gray-400 mb-4">
               {this.state.error?.message || 'An unexpected error occurred'}
             </p>
-            <button
-              onClick={() => {
-                this.setState({ hasError: false, error: null });
-                window.location.hash = '/';
-                window.location.reload();
-              }}
-              className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-500 transition-colors"
-            >
-              Reload App
-            </button>
+            <div className="flex gap-3 justify-center">
+              <button
+                onClick={() => {
+                  this.setState({ hasError: false, error: null });
+                }}
+                className="px-4 py-2 rounded-lg bg-gray-700 text-white text-sm font-semibold hover:bg-gray-600 transition-colors"
+              >
+                Try Again
+              </button>
+              <button
+                onClick={() => {
+                  this.setState({ hasError: false, error: null });
+                  window.location.href = '/';
+                }}
+                className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-500 transition-colors"
+              >
+                Go Home
+              </button>
+            </div>
           </div>
         </div>
       );
@@ -59,6 +72,8 @@ export default function App() {
             <Route path="contests" element={<ContestImport />} />
             <Route path="my-contests" element={<MyContests />} />
             <Route path="backtesting" element={<Backtesting />} />
+            {/* Catch-all: redirect unknown routes to home */}
+            <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>
       </AppProvider>

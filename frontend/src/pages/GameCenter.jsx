@@ -256,6 +256,11 @@ function LiveScoreBadge({ liveState }) {
 
   if (liveState.game_status === 'Preview') return null;
 
+  // Extra safety: if detailed_state indicates pre-game, don't show as live
+  const preGameStates = ['warmup', 'pre-game', 'scheduled', 'delayed start'];
+  const detailedLower = (liveState.detailed_state || '').toLowerCase();
+  if (liveState.game_status === 'Live' && preGameStates.includes(detailedLower)) return null;
+
   const isLive = liveState.game_status === 'Live';
   const isFinal = liveState.game_status === 'Final';
 
@@ -323,8 +328,17 @@ function LineupTable({ team, status, pitcher, batters }) {
               {pitcher.handedness || '?'}
             </span>
             <span className="text-xs font-semibold text-gray-200">{pitcher.name}</span>
+            {pitcher.opener_status === 'PO' && (
+              <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-amber-500/15 text-amber-400 leading-none">PO</span>
+            )}
+            {pitcher.opener_status === 'PLR' && (
+              <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-blue-500/15 text-blue-400 leading-none">PLR</span>
+            )}
           </div>
           <div className="flex items-center gap-2">
+            {pitcher.median_pts != null && (
+              <span className="text-[10px] font-mono text-blue-400/80">{pitcher.median_pts.toFixed(1)}pts</span>
+            )}
             {pitcher.salary && (
               <span className="text-[10px] font-mono text-emerald-400/80">${(pitcher.salary / 1000).toFixed(1)}k</span>
             )}
@@ -358,8 +372,17 @@ function LineupTable({ team, status, pitcher, batters }) {
                     {player.handedness}
                   </span>
                 )}
+                {player.opener_status === 'PO' && (
+                  <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-amber-500/15 text-amber-400 leading-none">PO</span>
+                )}
+                {player.opener_status === 'PLR' && (
+                  <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-blue-500/15 text-blue-400 leading-none">PLR</span>
+                )}
               </div>
               <div className="flex items-center gap-2">
+                {player.median_pts != null && (
+                  <span className="text-[10px] font-mono text-blue-400/70">{player.median_pts.toFixed(1)}</span>
+                )}
                 {player.salary && (
                   <span className="text-[10px] font-mono text-gray-500">${(player.salary / 1000).toFixed(1)}k</span>
                 )}
@@ -386,6 +409,7 @@ function LineupTable({ team, status, pitcher, batters }) {
 
 function GameCard({ game, liveState }) {
   const homeTeam = game.home_team_abbr || game.home.team;
+  const displayTime = liveState?.game_time || game.game_time;
 
   return (
     <div className="rounded-lg border border-gray-800 bg-gray-900 overflow-hidden">
@@ -397,10 +421,10 @@ function GameCard({ game, liveState }) {
             <span className="text-lg font-bold text-gray-100">{game.away.team}</span>
             <span className="text-xs text-gray-600">@</span>
             <span className="text-lg font-bold text-gray-100">{game.home.team}</span>
-            {game.game_time && (
+            {displayTime && (
               <div className="flex items-center gap-1 ml-1">
                 <Clock className="w-3 h-3 text-gray-500" />
-                <span className="text-[11px] text-gray-400">{game.game_time}</span>
+                <span className="text-[11px] text-gray-400">{displayTime}</span>
               </div>
             )}
           </div>
@@ -512,7 +536,8 @@ export default function GameCenter() {
     try {
       if (forceRefresh) setRefreshing(true);
       else setLoading(true);
-      const data = await api.getGameLineups(forceRefresh, site, selectedDate || null);
+      const slateId = slateFilter && selectedSlate ? selectedSlate.slate_id : null;
+      const data = await api.getGameLineups(forceRefresh, site, selectedDate || null, slateId);
       setGames(data);
       setError(null);
     } catch (err) {
@@ -521,7 +546,7 @@ export default function GameCenter() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [site, selectedDate]);
+  }, [site, selectedDate, selectedSlate, slateFilter]);
 
   const loadLiveScores = useCallback(async () => {
     if (!isToday) {

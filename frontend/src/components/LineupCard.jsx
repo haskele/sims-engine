@@ -3,16 +3,28 @@ import { POSITION_COLORS } from '../utils/constants';
 import { ChevronDown, ChevronUp, Copy, Pencil } from 'lucide-react';
 import { useState } from 'react';
 
+const DK_SLOT_ORDER = ['P', 'SP', 'C', '1B', '2B', '3B', 'SS', 'OF', 'UTIL'];
+
+function slotSortKey(pos) {
+  const idx = DK_SLOT_ORDER.indexOf(pos);
+  return idx >= 0 ? idx : 99;
+}
+
 export default function LineupCard({ lineup, index, expanded: initialExpanded = false, onEdit }) {
   const [expanded, setExpanded] = useState(initialExpanded);
+
+  const sortedPlayers = [...lineup.players].sort((a, b) => {
+    const posA = a.rosterPosition || a.position;
+    const posB = b.rosterPosition || b.position;
+    return slotSortKey(posA) - slotSortKey(posB);
+  });
 
   const totalSalary = lineup.players.reduce((sum, p) => sum + p.salary, 0);
   const totalProj = lineup.players.reduce((sum, p) => sum + p.median, 0);
   const salaryCap = 50000;
   const remaining = salaryCap - totalSalary;
 
-  // Compact lineup summary: (SP) M. Fried, (C) G. Sanchez, ...
-  const lineupSummary = lineup.players.map(p => {
+  const lineupSummary = sortedPlayers.map(p => {
     const pos = p.rosterPosition || p.position;
     const parts = p.name.split(' ');
     const shortName = parts.length > 1
@@ -88,7 +100,7 @@ export default function LineupCard({ lineup, index, expanded: initialExpanded = 
       {/* Player list */}
       {expanded && (
         <div className="border-t border-gray-800">
-          {lineup.players.map((player, i) => {
+          {sortedPlayers.map((player, i) => {
             const posColor = POSITION_COLORS[player.position] || '#6b7280';
             return (
               <div

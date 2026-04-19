@@ -63,6 +63,11 @@ _FL_TEAM_ABBR: Dict[str, str] = {
 _fl_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
 _FL_CACHE_TTL = 300  # 5 minutes
 
+# Prematch odds lock: once odds are fetched for a date, lock them in permanently.
+# Key is date_key (e.g. "4_19_2026"), value is the list of game odds dicts.
+# This prevents live/in-game lines from overwriting prematch values.
+_prematch_locked: Dict[str, List[Dict[str, Any]]] = {}
+
 
 async def get_mlb_odds() -> Dict[str, Any]:
     """Fetch current MLB odds from DraftKings Sportsbook.
@@ -219,12 +224,20 @@ async def fetch_fantasylabs_odds(
     Returns a list of per-game dicts with keys:
       away_team, home_team (abbreviations), away_ml, home_ml,
       game_total, spread, away_implied, home_implied
+
+    IMPORTANT: Uses prematch locking. Once odds are successfully fetched for
+    a given date, those values are permanently cached and never overwritten.
+    This prevents live/in-game lines from contaminating projections.
     """
     d = date.fromisoformat(target_date) if target_date else date.today()
     date_key = f"{d.month}_{d.day}_{d.year}"
     cache_key = f"fl-odds-{date_key}"
 
-    # Check cache
+    # Return prematch-locked odds if available (permanent for the session)
+    if date_key in _prematch_locked:
+        return _prematch_locked[date_key]
+
+    # Check short-term cache (for rate limiting during prematch period)
     if cache_key in _fl_cache:
         ts, cached = _fl_cache[cache_key]
         if time.time() - ts < _FL_CACHE_TTL:
@@ -277,9 +290,42 @@ async def fetch_fantasylabs_odds(
             "home_implied": home_implied,
         })
 
+    # Update short-term cache
     _fl_cache[cache_key] = (time.time(), games)
-    logger.info("Fetched %d MLB game odds from Fantasy Labs for %s", len(games), date_key)
+
+    # Lock prematch odds: once we have valid game data with totals, lock it in.
+    # This ensures subsequent fetches (which may return live lines) won't override.
+    if games and any(g.get("game_total") is not None for g in games):
+        _prematch_locked[date_key] = games
+        logger.info(
+            "Locked prematch odds for %s (%d games). These will not be refreshed with live lines.",
+            date_key, len(games),
+        )
+    else:
+        logger.info("Fetched %d MLB game odds from Fantasy Labs for %s (not locked yet — no totals)", len(games), date_key)
+
     return games
+
+
+def clear_prematch_lock(target_date: Optional[str] = None) -> bool:
+    """Clear the prematch odds lock for a given date, allowing a fresh fetch.
+
+    Useful if odds were locked before all games had lines posted, or to
+    force-refresh during the prematch window.
+
+    Returns True if a lock was cleared, False if no lock existed.
+    """
+    d = date.fromisoformat(target_date) if target_date else date.today()
+    date_key = f"{d.month}_{d.day}_{d.year}"
+    cache_key = f"fl-odds-{date_key}"
+
+    had_lock = date_key in _prematch_locked
+    _prematch_locked.pop(date_key, None)
+    _fl_cache.pop(cache_key, None)
+
+    if had_lock:
+        logger.info("Cleared prematch odds lock for %s", date_key)
+    return had_lock
 
 
 def _safe_int(val: Any) -> Optional[int]:

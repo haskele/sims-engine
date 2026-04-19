@@ -55,6 +55,16 @@ export default function PlayerRow({ player, playerType, onToggleExclude, onUpdat
           <span className={`text-sm ${player.excluded ? 'text-gray-600 line-through' : 'text-gray-100'}`}>
             {player.name}
           </span>
+          {player.openerStatus === 'PO' && (
+            <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-amber-500/15 text-amber-400 leading-none">
+              PO
+            </span>
+          )}
+          {player.openerStatus === 'PLR' && (
+            <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-blue-500/15 text-blue-400 leading-none">
+              PLR
+            </span>
+          )}
         </div>
       </td>
 

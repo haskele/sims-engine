@@ -86,6 +86,27 @@ _ALIASES: Dict[str, list[str]] = {
     "Nick Castellanos": ["Nicholas Castellanos"],
     "Bobby Witt Jr": ["Bobby Witt Jr.", "Bobby Witt"],
     "Manny Machado": ["Manuel Machado"],
+    # Common full-name vs nickname mismatches
+    "Zach McKinstry": ["Zach Mckinstry", "Zachary McKinstry"],
+    "Jonathan India": ["Jon India"],
+    "Luis Matos": ["Luis Matos"],
+    "Liam Hendriks": ["Liam Hendriks"],
+    "Nick Allen": ["Nicholas Allen"],
+    "Peter Lambert": ["Pete Lambert"],
+    "Will Benson": ["William Benson"],
+    "Tyler Freeman": ["Tyler Freeman"],
+    "Brett Sullivan": ["Brett Sullivan"],
+    "Ty France": ["Tyler France"],
+    "Jorge Soler": ["Jorge Soler"],
+    "Ezequiel Duran": ["Ezequiel Durán"],
+    "Mike Soroka": ["Michael Soroka"],
+    "Eloy Jimenez": ["Eloy Jiménez"],
+    "Brandon Valenzuela": ["Brandon Valenzuela"],
+    "Dustin Harris": ["Dustin Harris"],
+    "Max Muncy": ["Maxwell Muncy"],
+    "Nathan Eovaldi": ["Nate Eovaldi", "Nathan Eovaldi"],
+    "Liam Hicks": ["Liam Hicks"],
+    "Nathan Church": ["Nate Church"],
 }
 
 # Build reverse lookup: normalised alternate → normalised canonical

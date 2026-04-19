@@ -99,8 +99,8 @@ async def fetch_dk_slates(target_date: Optional[date] = None) -> List[Dict[str, 
             if sport_id not in (2,):
                 continue
 
-        # Parse start time
-        start_time_raw = dg.get("StartDate") or dg.get("StartDateEst")
+        # Parse start time — prefer StartDateEst (Eastern) over StartDate (UTC)
+        start_time_raw = dg.get("StartDateEst") or dg.get("StartDate")
         start_time = None
         if start_time_raw:
             try:
@@ -114,15 +114,18 @@ async def fetch_dk_slates(target_date: Optional[date] = None) -> List[Dict[str, 
             except Exception:
                 start_time = str(start_time_raw)
 
-        # Check if this slate is for the target date
-        # DK draft groups have StartDateEst or we can check games
+        # Filter to target date using StartDateEst
         draft_group_date = None
         if start_time:
             try:
-                dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+                clean = start_time.split(".")[0]  # strip .0000000 suffix
+                dt = datetime.fromisoformat(clean.replace("Z", "+00:00"))
                 draft_group_date = dt.date()
             except (ValueError, TypeError):
                 pass
+
+        if target_date and draft_group_date and draft_group_date != target_date:
+            continue
 
         # Get detailed info about this draft group (games list)
         games_in_slate: List[Dict[str, Any]] = []
@@ -148,17 +151,36 @@ async def fetch_dk_slates(target_date: Optional[date] = None) -> List[Dict[str, 
             logger.debug("Skipping slate with GameTypeId=%s: %s", game_type_id, dg_name)
             continue
 
-        # Build a readable name
-        name_parts = []
+        # Build a readable name with ET start time
         tag = dg.get("DraftGroupTag", "")
-        suffix = dg.get("ContestStartTimeSuffix", "")
-        if tag:
+        suffix = dg.get("ContestStartTimeSuffix", "") or ""
+        if suffix == "None":
+            suffix = ""
+
+        # Format start time as "H:MM PM ET"
+        time_label = ""
+        if start_time:
+            try:
+                clean = start_time.split(".")[0]
+                dt_parsed = datetime.fromisoformat(clean)
+                hour = dt_parsed.hour
+                minute = dt_parsed.minute
+                ampm = "AM" if hour < 12 else "PM"
+                display_hour = hour % 12 or 12
+                time_label = f"{display_hour}:{minute:02d} {ampm} ET"
+            except (ValueError, TypeError):
+                pass
+
+        name_parts = []
+        if game_count > 0:
+            name_parts.append(f"{game_count}-Game")
+        if suffix.strip():
+            name_parts.append(suffix.strip())
+        elif tag:
             name_parts.append(tag)
-        if suffix:
-            name_parts.append(suffix)
-        if not name_parts:
-            name_parts.append(f"DG-{dg_id}")
-        slate_name = " ".join(name_parts)
+        if time_label:
+            name_parts.append(f"({time_label})")
+        slate_name = " ".join(name_parts) if name_parts else f"DG-{dg_id}"
 
         slates.append(
             _make_slate(
@@ -283,42 +305,7 @@ async def fetch_fd_slates(target_date: Optional[date] = None) -> List[Dict[str, 
 
 # ── Team abbreviation mapping ────────────────────────────────────────────────
 
-# DK sometimes uses slightly different abbreviations than MLB Stats API.
-# This map converts DK team abbrevs to standard MLB ones.
-DK_TO_MLB_TEAM: Dict[str, str] = {
-    "ARI": "ARI", "AZ": "ARI",
-    "ATL": "ATL",
-    "BAL": "BAL",
-    "BOS": "BOS",
-    "CHC": "CHC", "CHI": "CHC",
-    "CWS": "CWS",
-    "CIN": "CIN",
-    "CLE": "CLE",
-    "COL": "COL",
-    "DET": "DET",
-    "HOU": "HOU",
-    "KC": "KC",
-    "LAA": "LAA",
-    "LAD": "LAD", "LA": "LAD",
-    "MIA": "MIA",
-    "MIL": "MIL",
-    "MIN": "MIN",
-    "NYM": "NYM",
-    "NYY": "NYY",
-    "OAK": "OAK", "A'S": "OAK",
-    "PHI": "PHI",
-    "PIT": "PIT",
-    "SD": "SD",
-    "SF": "SF", "SFG": "SF",
-    "SEA": "SEA",
-    "STL": "STL",
-    "TB": "TB",
-    "TEX": "TEX",
-    "TOR": "TOR",
-    "WSH": "WSH", "WAS": "WSH",
-}
-
-
-def normalise_dk_team(abbr: str) -> str:
-    """Convert a DK team abbreviation to the standard MLB abbreviation."""
-    return DK_TO_MLB_TEAM.get(abbr.upper(), abbr.upper())
+# Canonical map and normalizer live in services.constants; re-exported here
+# for backward compatibility with existing importers (e.g. daily_pipeline).
+from services.constants import DK_TEAM_ALIAS as DK_TO_MLB_TEAM  # noqa: E402
+from services.constants import normalise_dk_team  # noqa: E402, F401

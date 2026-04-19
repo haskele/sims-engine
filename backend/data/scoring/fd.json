@@ -1,0 +1,13 @@
+{
+  "site": "fd",
+  "name": "FanDuel Classic MLB",
+  "hitter": {
+    "single": 3, "double": 6, "triple": 9, "homeRun": 12,
+    "rbi": 3.5, "run": 3.2, "baseOnBalls": 3, "hitByPitch": 3,
+    "stolenBase": 6, "caughtStealing": 0
+  },
+  "pitcher": {
+    "win": 6, "qualityStart": 4, "earnedRun": -3,
+    "strikeOut": 3, "inningsPitched": 3
+  }
+}

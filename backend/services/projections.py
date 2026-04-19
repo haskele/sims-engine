@@ -52,7 +52,9 @@ def _load_park_factors() -> Dict[str, Any]:
     global _PARK_FACTORS
     if _PARK_FACTORS is not None:
         return _PARK_FACTORS
-    pf_path = Path(__file__).resolve().parent.parent / "data" / "park_factors.json"
+    pf_path = Path(__file__).resolve().parent.parent / "config_data" / "park_factors.json"
+    if not pf_path.exists():
+        pf_path = Path(__file__).resolve().parent.parent / "data" / "park_factors.json"
     try:
         with open(pf_path) as f:
             _PARK_FACTORS = json.load(f)

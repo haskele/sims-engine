@@ -32,7 +32,7 @@ function StackExpInput({ team, stackSize, values, onChange }) {
 }
 
 export default function Projections() {
-  const { site, selectedSlate, selectedDate, stackExposures, setStackExposures } = useApp();
+  const { site, selectedSlate, selectedDate, stackExposures, setStackExposures, playerExposures, setPlayerExposures } = useApp();
   const [players, setPlayers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -45,6 +45,7 @@ export default function Projections() {
   const [sortKey, setSortKey] = useState('median');
   const [sortDir, setSortDir] = useState('desc');
   const [searchQuery, setSearchQuery] = useState('');
+  const [hideRPs, setHideRPs] = useState(true); // Hide relief pitchers by default
 
   // Load projections when slate changes
   useEffect(() => {
@@ -70,7 +71,7 @@ export default function Projections() {
           name: p.player_name,
           position: p.position || 'UTIL',
           team: p.team,
-          opponent: p.opp_team || '—',
+          opponent: p.opp_team ? (p.is_home === false ? `@${p.opp_team}` : p.opp_team) : '—',
           salary: p.salary || 0,
           order: p.batting_order,
           floor: p.floor_pts,
@@ -89,14 +90,16 @@ export default function Projections() {
           impliedTotal: p.implied_total,
           teamImplied: p.team_implied,
           temperature: p.temperature,
-          minExp: p.min_exposure ?? 0,
-          maxExp: p.max_exposure ?? 100,
+          minExp: playerExposures[p.player_name]?.min ?? p.min_exposure ?? 0,
+          maxExp: playerExposures[p.player_name]?.max ?? p.max_exposure ?? 100,
           locked: false,
           excluded: false,
           kLine: p.k_line || null,
           hrLine: p.hr_line || null,
           tbLine: p.tb_line || null,
           hrrLine: p.hrr_line || null,
+          openerStatus: p.opener_status || null,
+          rpRole: p.rp_role || null,
         }));
         setPlayers(mapped);
         setLoading(false);
@@ -115,6 +118,14 @@ export default function Projections() {
       if (p.excluded) return true; // always show excluded so user can un-exclude
       // Remove hitters not in a confirmed lineup (team lineup is confirmed but player is out)
       if (!p.isPitcher && p.lineupStatus === 'out' && p.confirmed === false && !p.locked) return false;
+      // Hide RPs filter: only show SP, PO, PLR, or pitchers without an rp_role (starters)
+      if (playerType === 'pitchers' && hideRPs && p.isPitcher) {
+        const isStarter = p.position === 'SP';
+        const isOpener = p.openerStatus === 'PO';
+        const isLongReliever = p.openerStatus === 'PLR';
+        const hasNoRPRole = !p.rpRole; // null rp_role means they're a starter
+        if (!isStarter && !isOpener && !isLongReliever && !hasNoRPRole) return false;
+      }
       if (posFilter !== 'ALL') {
         if (playerType === 'hitters') {
           if (!p.position.split('/').includes(posFilter)) return false;
@@ -127,7 +138,7 @@ export default function Projections() {
       if (searchQuery && !p.name.toLowerCase().includes(searchQuery.toLowerCase())) return false;
       return true;
     });
-  }, [players, playerType, posFilter, teamFilter, salaryMin, salaryMax, minProj, searchQuery]);
+  }, [players, playerType, posFilter, teamFilter, salaryMin, salaryMax, minProj, searchQuery, hideRPs]);
 
   const sortedPlayers = useMemo(() => {
     return [...filteredPlayers].sort((a, b) => {
@@ -154,7 +165,20 @@ export default function Projections() {
   };
 
   const handleUpdateProjection = (id, updates) => {
-    setPlayers(players.map(p => p.id === id ? { ...p, ...updates } : p));
+    setPlayers(players.map(p => {
+      if (p.id !== id) return p;
+      const updated = { ...p, ...updates };
+      if ('minExp' in updates || 'maxExp' in updates) {
+        setPlayerExposures(prev => ({
+          ...prev,
+          [p.name]: {
+            min: 'minExp' in updates ? updates.minExp : (prev[p.name]?.min ?? p.minExp ?? 0),
+            max: 'maxExp' in updates ? updates.maxExp : (prev[p.name]?.max ?? p.maxExp ?? 100),
+          },
+        }));
+      }
+      return updated;
+    }));
   };
 
   const uniqueTeams = [...new Set(players.map(p => p.team))].sort();
@@ -283,7 +307,7 @@ export default function Projections() {
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={() => { if (selectedSlate) { setLoading(true); setError(null); api.getSlateProjections(selectedSlate.slate_id, site).then(data => { setPlayers(data.map((p, i) => ({ id: i + 1, name: p.player_name, position: p.position || 'UTIL', team: p.team, opponent: p.opp_team || '—', salary: p.salary || 0, order: p.batting_order, floor: p.floor_pts, median: p.median_pts, ceiling: p.ceiling_pts, ownership: p.projected_ownership || 0, value: p.salary > 0 ? +(p.median_pts / (p.salary / 1000)).toFixed(2) : 0, confirmed: p.is_confirmed, lineupStatus: p.lineup_status || 'unknown', isPitcher: p.is_pitcher, era: p.season_era, k9: p.season_k9, avg: p.season_avg, ops: p.season_ops, gamesInLog: p.games_in_log, impliedTotal: p.implied_total, teamImplied: p.team_implied, temperature: p.temperature, minExp: p.min_exposure ?? 0, maxExp: p.max_exposure ?? 100, locked: false, excluded: false }))); setLoading(false); }).catch(err => { setError(err.message); setLoading(false); }); } }}
+            onClick={() => { if (selectedSlate) { setLoading(true); setError(null); api.getSlateProjections(selectedSlate.slate_id, site).then(data => { setPlayers(data.map((p, i) => ({ id: i + 1, name: p.player_name, position: p.position || 'UTIL', team: p.team, opponent: p.opp_team || '—', salary: p.salary || 0, order: p.batting_order, floor: p.floor_pts, median: p.median_pts, ceiling: p.ceiling_pts, ownership: p.projected_ownership || 0, value: p.salary > 0 ? +(p.median_pts / (p.salary / 1000)).toFixed(2) : 0, confirmed: p.is_confirmed, lineupStatus: p.lineup_status || 'unknown', isPitcher: p.is_pitcher, era: p.season_era, k9: p.season_k9, avg: p.season_avg, ops: p.season_ops, gamesInLog: p.games_in_log, impliedTotal: p.implied_total, teamImplied: p.team_implied, temperature: p.temperature, minExp: playerExposures[p.player_name]?.min ?? p.min_exposure ?? 0, maxExp: playerExposures[p.player_name]?.max ?? p.max_exposure ?? 100, locked: false, excluded: false, openerStatus: p.opener_status || null, rpRole: p.rp_role || null }))); setLoading(false); }).catch(err => { setError(err.message); setLoading(false); }); } }}
             className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-gray-700 bg-gray-800 text-xs text-gray-300 hover:bg-gray-700 transition-colors"
           >
             <RefreshCw className="w-3.5 h-3.5" />
@@ -368,6 +392,18 @@ export default function Projections() {
               <option value="SS">SS</option>
               <option value="OF">OF</option>
             </select>
+          )}
+
+          {playerType === 'pitchers' && (
+            <label className="flex items-center gap-1.5 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={hideRPs}
+                onChange={(e) => setHideRPs(e.target.checked)}
+                className="w-3.5 h-3.5 rounded border-gray-600 bg-gray-800 text-blue-500 focus:ring-blue-500 focus:ring-offset-0 cursor-pointer"
+              />
+              <span className="text-xs text-gray-400">Hide RPs</span>
+            </label>
           )}
 
           <select
@@ -514,6 +550,12 @@ export default function Projections() {
                       </td>
                       <td className="px-3 py-2 text-center">
                         <span className="text-xs text-gray-300">{team.pitcher?.name || '--'}</span>
+                        {team.pitcher?.openerStatus === 'PO' && (
+                          <span className="ml-1 text-[9px] font-bold px-1 py-0.5 rounded bg-amber-500/15 text-amber-400 leading-none">PO</span>
+                        )}
+                        {team.pitcher?.openerStatus === 'PLR' && (
+                          <span className="ml-1 text-[9px] font-bold px-1 py-0.5 rounded bg-blue-500/15 text-blue-400 leading-none">PLR</span>
+                        )}
                       </td>
                       <td className="px-3 py-2 text-right">
                         <span className="text-xs font-mono text-gray-400">{team.stackOwn.toFixed(0)}%</span>
@@ -549,13 +591,21 @@ export default function Projections() {
                 <div className="px-4 py-2 flex items-center justify-between bg-gray-900/50">
                   <div className="flex items-center gap-3">
                     <span className="text-sm font-bold text-gray-100">{team.team}</span>
-                    <span className="text-xs text-gray-500">vs {team.opponent}</span>
+                    <span className="text-xs text-gray-500">{team.opponent?.startsWith('@') ? team.opponent : `vs ${team.opponent}`}</span>
                     {team.impliedTotal && (
                       <span className="text-xs font-mono text-amber-400">{team.impliedTotal.toFixed(1)} runs</span>
                     )}
                   </div>
                   {team.pitcher && (
-                    <span className="text-xs text-gray-400">SP: {team.pitcher.name}</span>
+                    <span className="text-xs text-gray-400">
+                      SP: {team.pitcher.name}
+                      {team.pitcher.openerStatus === 'PO' && (
+                        <span className="ml-1 text-[9px] font-bold px-1 py-0.5 rounded bg-amber-500/15 text-amber-400 leading-none">PO</span>
+                      )}
+                      {team.pitcher.openerStatus === 'PLR' && (
+                        <span className="ml-1 text-[9px] font-bold px-1 py-0.5 rounded bg-blue-500/15 text-blue-400 leading-none">PLR</span>
+                      )}
+                    </span>
                   )}
                 </div>
                 <div className="px-4 py-2">
@@ -570,6 +620,12 @@ export default function Projections() {
                           {h.order || '-'}
                         </span>
                         <span className="text-gray-200 truncate flex-1">{h.name}</span>
+                        {h.openerStatus === 'PO' && (
+                          <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-amber-500/15 text-amber-400 leading-none">PO</span>
+                        )}
+                        {h.openerStatus === 'PLR' && (
+                          <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-blue-500/15 text-blue-400 leading-none">PLR</span>
+                        )}
                         <span className="text-gray-500 font-mono">{h.median.toFixed(1)}</span>
                         <span className="text-gray-600 font-mono text-[10px]">{(h.ownership || 0).toFixed(0)}%</span>
                       </div>

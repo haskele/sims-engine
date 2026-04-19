@@ -4,6 +4,10 @@ frontend/node_modules/
 
 # Build output
 frontend/dist/
+frontend-dist/
+staging-frontend-dist/
+production-frontend-dist/
+backend/frontend-dist/
 
 # Python
 __pycache__/
@@ -14,7 +18,16 @@ venv/
 env/
 
 # Database
-data/*.db
+backend/data/*.db
+*.db
+
+# Data caches (regenerated at runtime)
+backend/data/cache/
+backend/data/raw/
+backend/data/normalized/
+backend/data/canonical/
+backend/data/feature_store/
+backend/data/daily_archive/
 
 # IDE
 .vscode/
@@ -30,3 +43,21 @@ Thumbs.db
 
 # Cookies / secrets
 *cookies*.json
+
+# DK salary / projection CSVs (large, environment-specific)
+dk salaries*/
+projections by slate*/
+backend/dk-salaries/
+backend/projections/*.csv
+backend/data/projections/*.csv
+
+# DK entry CSVs (user data)
+DKEntries*.csv
+
+# Doc files (notes, not code)
+*.docx
+
+# Images
+*.png
+*.jpg
+*.jpeg

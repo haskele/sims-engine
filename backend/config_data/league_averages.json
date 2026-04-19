@@ -1,0 +1,43 @@
+{
+  "season": 2026,
+  "hitting": {
+    "k_rate": 0.223,
+    "bb_rate": 0.083,
+    "hbp_rate": 0.012,
+    "hr_per_contact": 0.038,
+    "double_per_contact": 0.048,
+    "triple_per_contact": 0.005,
+    "single_per_contact": 0.209,
+    "babip": 0.296,
+    "sb_rate": 0.075,
+    "runs_per_pa": 0.118,
+    "rbi_per_pa": 0.114
+  },
+  "pitching": {
+    "k_rate": 0.223,
+    "bb_rate": 0.078,
+    "hbp_rate": 0.010,
+    "hr_per_bf": 0.031,
+    "babip": 0.293,
+    "ip_per_start": 5.5
+  },
+  "regression_pa": {
+    "k_rate": 60,
+    "bb_rate": 120,
+    "hbp_rate": 200,
+    "hr_rate": 170,
+    "babip": 400,
+    "sb_rate": 100,
+    "double_rate": 200,
+    "triple_rate": 300,
+    "runs_per_pa": 200,
+    "rbi_per_pa": 200
+  },
+  "regression_bf": {
+    "k_rate": 70,
+    "bb_rate": 170,
+    "hbp_rate": 300,
+    "hr_rate": 200,
+    "babip": 500
+  }
+}

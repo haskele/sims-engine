@@ -193,6 +193,7 @@ def optimize_lineup(
     min_unique: int = 3,
     variance: float = 0.0,
     skew: str = "neutral",
+    min_salary: int | None = None,
 ) -> list[dict[str, Any]] | None:
     """Build a single optimal lineup using integer linear programming.
 
@@ -285,17 +286,18 @@ def optimize_lineup(
             )
 
     # Salary cap
-    prob += (
-        pulp.lpSum(
-            x[(p["id"], s_idx)] * p["salary"]
-            for p in players
-            if p["id"] not in excluded_set
-            for s_idx in slot_indices
-            if (p["id"], s_idx) in x
-        )
-        <= salary_cap,
-        "salary_cap",
+    salary_expr = pulp.lpSum(
+        x[(p["id"], s_idx)] * p["salary"]
+        for p in players
+        if p["id"] not in excluded_set
+        for s_idx in slot_indices
+        if (p["id"], s_idx) in x
     )
+    prob += (salary_expr <= salary_cap, "salary_cap")
+
+    # Salary floor
+    if min_salary and min_salary > 0:
+        prob += (salary_expr >= min_salary, "salary_floor")
 
     # Locked players
     for pid in locked:
@@ -376,6 +378,7 @@ def generate_lineup_pool(
     variance: float = 0.0,
     skew: str = "neutral",
     stack_exposures: dict[str, dict[int, tuple[float, float]]] | None = None,
+    min_salary: int | None = None,
 ) -> list[list[dict[str, Any]]]:
     """Generate a diverse pool of optimised lineups.
 
@@ -441,6 +444,7 @@ def generate_lineup_pool(
             min_unique=min_unique,
             variance=variance,
             skew=skew,
+            min_salary=min_salary,
         )
         if lu is None:
             logger.warning("ILP: could not generate lineup %d/%d, stopping ILP phase", i + 1, n_ilp)
@@ -456,6 +460,7 @@ def generate_lineup_pool(
                     locked=base_locked, excluded=iter_excluded,
                     previous_lineups=previous, min_unique=min_unique,
                     variance=min(1.0, variance + 0.3), skew=skew,
+                    min_salary=min_salary,
                 )
                 if retry_lu and _lineup_stack_compliant(retry_lu, lineups, stack_exposures, n_lineups):
                     break
@@ -475,12 +480,15 @@ def generate_lineup_pool(
     )
 
     # ── Phase 2: Greedy heuristic for remaining lineups ───────────────────
-    max_total_time = 180  # 3-minute safety net for entire generation
+    max_total_time = 600  # 10-minute safety net for large pools
     n_greedy = n_lineups - len(lineups)
     if n_greedy > 0:
         t_greedy = time.time()
         greedy_failures = 0
-        max_greedy_failures = max(20, n_greedy // 2)
+        max_greedy_failures = max(50, n_greedy)
+
+        # For large pools, relax uniqueness progressively to avoid running out
+        effective_min_unique = min_unique
 
         for i in range(n_greedy):
             if time.time() - t_start > max_total_time:
@@ -492,14 +500,23 @@ def generate_lineup_pool(
                 )
                 break
 
+            # After many failures, relax uniqueness constraint
+            if greedy_failures > max_greedy_failures // 3:
+                effective_min_unique = max(1, min_unique - 1)
+            if greedy_failures > max_greedy_failures * 2 // 3:
+                effective_min_unique = 1
+
             iter_excluded = _compute_exposure_exclusions(
                 base_excluded, lineups, exposure_limits
             )
 
             # Scale randomness: start moderate, increase for later lineups
-            # to push diversity
             progress = i / max(n_greedy, 1)
             randomness = 0.15 + 0.35 * progress  # 0.15 → 0.50
+
+            # For large pools, only check uniqueness against recent lineups
+            # to avoid exponential slowdown
+            recent_previous = previous[-50:] if len(previous) > 50 else previous
 
             lu = greedy_lineup(
                 pool,
@@ -508,13 +525,15 @@ def generate_lineup_pool(
                 objective=objective,
                 locked=base_locked,
                 excluded=iter_excluded,
-                previous_lineups=previous,
-                min_unique=min_unique,
+                previous_lineups=recent_previous,
+                min_unique=effective_min_unique,
+                min_salary=min_salary,
             )
             if lu is None:
                 greedy_failures += 1
                 continue
 
+            greedy_failures = 0
             lineups.append(lu)
             previous.append([p["player_id"] for p in lu])
 
@@ -570,16 +589,19 @@ def generate_lineup_pool(
                 progress = len(lineups) / max(n_lineups, 1)
                 randomness = 0.15 + 0.35 * progress
 
+                recent_prev = previous[-50:] if len(previous) > 50 else previous
                 lu = greedy_lineup(
                     pool, site=site, randomness=randomness,
                     objective=objective, locked=base_locked,
-                    excluded=iter_excluded, previous_lineups=previous,
-                    min_unique=max(1, min_unique - relax_step),  # also relax uniqueness
+                    excluded=iter_excluded, previous_lineups=recent_prev,
+                    min_unique=max(1, min_unique - relax_step),
+                    min_salary=min_salary,
                 )
                 if lu is None:
                     greedy_failures += 1
                     continue
 
+                greedy_failures = 0
                 lineups.append(lu)
                 previous.append([p["player_id"] for p in lu])
 
@@ -728,6 +750,7 @@ def greedy_lineup(
     excluded: list[int] | None = None,
     previous_lineups: list[list[int]] | None = None,
     min_unique: int = 3,
+    min_salary: int | None = None,
 ) -> list[dict[str, Any]] | None:
     """Build a lineup using a greedy heuristic with randomness.
 
@@ -764,6 +787,7 @@ def greedy_lineup(
         lineup = _greedy_attempt(
             pool, slots, salary_cap, randomness, objective,
             locked, excluded_set, previous_lineups, min_unique,
+            min_salary=min_salary,
         )
         if lineup is not None:
             return lineup
@@ -781,6 +805,7 @@ def _greedy_attempt(
     excluded_set: set[int],
     previous_lineups: list[list[int]],
     min_unique: int,
+    min_salary: int | None = None,
 ) -> list[dict[str, Any]] | None:
     """Single greedy attempt — returns a lineup or None."""
     remaining_salary = salary_cap
@@ -820,11 +845,13 @@ def _greedy_attempt(
                     })
                     break
 
-    for s_idx in slot_order:
-        if s_idx in locked_assigned.values():
-            continue  # already filled by a locked player
+    unfilled_slots = [s_idx for s_idx in slot_order if s_idx not in locked_assigned.values()]
+    total_slots = len(unfilled_slots)
 
+    for fill_i, s_idx in enumerate(unfilled_slots):
         slot_name = slots[s_idx]
+        slots_remaining_after = total_slots - fill_i - 1
+
         eligible = [
             p
             for p in pool.eligible(slot_name)
@@ -836,12 +863,35 @@ def _greedy_attempt(
         if not eligible:
             return None  # infeasible
 
+        # Enforce salary floor: filter out players that would make the floor unreachable
+        if min_salary and min_salary > 0 and slots_remaining_after > 0:
+            current_spent = salary_cap - remaining_salary
+            salary_still_needed = min_salary - current_spent
+            max_pool_salary = max(p["salary"] for p in eligible)
+            min_salary_this_pick = salary_still_needed - (slots_remaining_after * max_pool_salary)
+            if min_salary_this_pick > 0:
+                eligible = [p for p in eligible if p["salary"] >= min_salary_this_pick]
+                if not eligible:
+                    return None
+
         # Value = pts / salary * 1000, with noise
         obj_key = objective
         scored = []
+
+        # Salary pressure: boost expensive players when underspending vs floor
+        salary_boost = 0.0
+        if min_salary and min_salary > 0 and total_slots > 0:
+            current_spent = salary_cap - remaining_salary
+            slots_filled = total_slots - slots_remaining_after
+            target_pace = min_salary * (slots_filled / total_slots)
+            if current_spent < target_pace:
+                salary_boost = 0.3 * ((target_pace - current_spent) / max(min_salary, 1))
+
         for p in eligible:
             pts = p.get(obj_key, p.get("median_pts", 0))
             base_val = pts / max(p["salary"], 1) * 1000
+            if salary_boost > 0:
+                base_val += salary_boost * (p["salary"] / 1000)
             noise = random.gauss(0, randomness * base_val) if randomness > 0 else 0
             scored.append((p, base_val + noise))
 
@@ -875,6 +925,12 @@ def _greedy_attempt(
         )
         used_ids.add(chosen["id"])
         remaining_salary -= chosen["salary"]
+
+    # Final salary floor check (handles edge cases with locked players)
+    if min_salary and min_salary > 0:
+        total_salary = sum(p["salary"] for p in result)
+        if total_salary < min_salary:
+            return None
 
     # Validate uniqueness against previous lineups
     if previous_lineups:

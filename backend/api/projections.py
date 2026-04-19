@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -20,6 +20,7 @@ from services.csv_projections import (
     identify_featured_csv_slate,
     list_available_slates as list_csv_slates,
     load_csv_projections,
+    load_dk_salaries,
 )
 from services.lineup_scraper import (
     _normalise_team,
@@ -112,11 +113,13 @@ class SlateProjectionOut(BaseModel):
     team: str
     position: str
     opp_team: Optional[str] = None
+    is_home: Optional[bool] = None
     game_pk: Optional[int] = None
     venue: Optional[str] = None
     salary: Optional[int] = None
     batting_order: Optional[int] = None
     is_pitcher: bool = False
+    is_bench: bool = False
     is_confirmed: bool = False
     floor_pts: float
     median_pts: float
@@ -134,6 +137,13 @@ class SlateProjectionOut(BaseModel):
     dk_id: Optional[int] = None
     min_exposure: Optional[float] = None
     max_exposure: Optional[float] = None
+    opener_status: Optional[str] = None  # "PO" (Projected Opener), "PLR" (Probable Long Reliever), or null
+    is_projected_starter: Optional[bool] = None  # True if this pitcher is the projected starter for their team
+    # RP-specific fields
+    rp_role: Optional[str] = None
+    appearance_rate: Optional[float] = None
+    expected_ip: Optional[float] = None
+    recent_usage_penalty: Optional[str] = None
     # DK Sportsbook player props
     k_line: Optional[str] = None      # Pitcher K prop, e.g. "4.5 (-154)"
     hr_line: Optional[str] = None     # Batter HR 1+, e.g. "+407"
@@ -189,25 +199,7 @@ async def list_slates(
     if history_slates:
         return history_slates
 
-    # Fallback to DK API
-    if site == "dk":
-        slates = await fetch_dk_slates(target_date=d)
-    else:
-        slates = []
-
-    return [
-        SlateOut(
-            slate_id=s["slate_id"],
-            site=s["site"],
-            name=s["name"],
-            game_count=s["game_count"],
-            start_time=s.get("start_time"),
-            game_type=s["game_type"],
-            draft_group_id=s["draft_group_id"],
-            is_historical=False,
-        )
-        for s in slates
-    ]
+    return []
 
 
 class SlateHistoryDateGroup(BaseModel):
@@ -266,13 +258,33 @@ async def get_featured_slate_projections(
     except ValueError:
         raise HTTPException(400, "Invalid date, use YYYY-MM-DD")
 
+    import asyncio as _aio
+
     # Try CSV-based projections first
     csv_slates = list_csv_slates(target_date=d, site=site)
     if csv_slates:
         featured = identify_featured_csv_slate(csv_slates)
         if featured and featured.get("csv_path"):
+            cache_key = f"featured-{d.isoformat()}-{site}"
             projections = load_csv_projections(featured["csv_path"], site)
-            projections = await _overlay_external_data(projections, target_date=d.isoformat())
+
+            # If enriched cache is warm, use it
+            if cache_key in _enriched_cache:
+                ts, cached = _enriched_cache[cache_key]
+                if _time.time() - ts < _ENRICHED_CACHE_TTL:
+                    import copy as _copy
+                    projections = _copy.deepcopy(cached)
+                else:
+                    _aio.create_task(_overlay_external_data(
+                        load_csv_projections(featured["csv_path"], site),
+                        target_date=d.isoformat(), cache_key=cache_key,
+                    ))
+            else:
+                _aio.create_task(_overlay_external_data(
+                    load_csv_projections(featured["csv_path"], site),
+                    target_date=d.isoformat(), cache_key=cache_key,
+                ))
+
             return [
                 SlateProjectionOut(**_sanitise_projection(p))
                 for p in projections
@@ -299,8 +311,12 @@ async def get_slate_projections(
     """Get projections scoped to a specific slate.
 
     Uses CSV projections when the slate_id matches a CSV filename.
-    Automatically saves a slate report snapshot on each load.
+    Returns enriched data if the overlay cache is warm; otherwise returns
+    base CSV data instantly and warms the cache in the background so the
+    next load is enriched.
     """
+    import asyncio as _aio
+
     try:
         d = date.fromisoformat(target_date) if target_date else date.today()
     except ValueError:
@@ -309,18 +325,36 @@ async def get_slate_projections(
     slate_name: Optional[str] = None
     game_count: Optional[int] = None
     projections: List[Dict[str, Any]] = []
+    from_csv = False
 
     # Extract date from slate_id for lineup lookups (format: MLB_YYYY-MM-DD-...)
     slate_date_str = _extract_date_from_slate_id(slate_id) or d.isoformat()
 
     # Check if this slate_id matches a CSV file
     csv_slates = list_csv_slates(target_date=d, site=site)
+    cache_key = f"slate-{slate_id}-{slate_date_str}"
+
     for cs in csv_slates:
         if cs["slate_id"] == slate_id and cs.get("csv_path"):
             slate_name = cs.get("name")
             game_count = cs.get("game_count")
             projections = load_csv_projections(cs["csv_path"], site)
-            projections = await _overlay_external_data(projections, target_date=slate_date_str)
+            from_csv = True
+
+            # If enriched cache is warm, use it (instant)
+            if cache_key in _enriched_cache:
+                ts, cached = _enriched_cache[cache_key]
+                if _time.time() - ts < _ENRICHED_CACHE_TTL:
+                    import copy as _copy
+                    projections = _copy.deepcopy(cached)
+                    break
+
+            # Cache is cold — return base CSV now, warm cache in background
+            _aio.create_task(_overlay_external_data(
+                load_csv_projections(cs["csv_path"], site),
+                target_date=slate_date_str,
+                cache_key=cache_key,
+            ))
             break
 
     if not projections:
@@ -344,7 +378,7 @@ async def get_slate_projections(
         projections = result.get("projections", [])
 
     # Auto-save slate report snapshot (only when we have fresh CSV data)
-    if projections and csv_slates:
+    if projections and from_csv:
         await _auto_save_slate_report(
             db=db,
             slate_id=slate_id,
@@ -592,7 +626,7 @@ async def save_slate_report(
             slate_name = cs.get("name")
             game_count = cs.get("game_count")
             projections = load_csv_projections(cs["csv_path"], site)
-            projections = await _overlay_external_data(projections, target_date=d.isoformat())
+            projections = await _overlay_external_data(projections, target_date=d.isoformat(), cache_key=f"report-{slate_id}-{d.isoformat()}")
             break
 
     if not projections:
@@ -697,6 +731,8 @@ class PlayerLineupOut(BaseModel):
     batting_order: Optional[int] = None
     handedness: str = ""
     salary: Optional[int] = None
+    median_pts: Optional[float] = None
+    opener_status: Optional[str] = None  # "PO", "PLR", or null
 
 
 class TeamLineupOut(BaseModel):
@@ -726,17 +762,6 @@ class GameLineupOut(BaseModel):
     weather: Optional[WeatherOut] = None
     home_team_abbr: str = ""
     slate_teams: List[str] = []
-
-
-class LiveGameState(BaseModel):
-    away_team: str
-    home_team: str
-    away_score: int = 0
-    home_score: int = 0
-    inning: int = 0
-    inning_half: str = ""  # "top" or "bottom"
-    game_status: str = ""  # "Preview", "Live", "Final"
-    game_pk: Optional[int] = None
 
 
 @router.get("/lineups/status", response_model=List[LineupStatusOut])
@@ -769,6 +794,7 @@ async def get_game_lineups(
     site: str = Query("dk", pattern="^(dk|fd)$"),
     force_refresh: bool = Query(False, description="Force refresh lineup data"),
     target_date: str = Query(None, description="YYYY-MM-DD, defaults to today"),
+    slate_id: str = Query(None, description="Slate ID to scope slate_teams filtering"),
 ):
     """Get full lineup data for all games.
 
@@ -783,32 +809,78 @@ async def get_game_lineups(
     For future dates, uses MLB Stats API for probable pitchers and CSV
     projections for batting orders.
     """
-    games = await fetch_lineups(force_refresh=force_refresh, target_date=target_date)
+    import asyncio as _aio
 
-    # Load CSV projections to fill in projected batting orders, salaries, and implied totals
+    # CSV data is instant (local file reads) — build it synchronously
     csv_data = _build_projected_lineups_extended(site, target_date=target_date)
     projected_by_team = csv_data["lineups"]
     salary_lookup_raw = csv_data["salaries"]
-    # Build canonical salary lookup for fuzzy name matching
     salary_lookup = build_canonical_lookup(salary_lookup_raw)
-    csv_implied_lookup = csv_data["implied_totals"]  # team -> team implied runs (from Saber Team)
-    csv_game_total_lookup = csv_data["game_totals"]  # team -> game O/U (from Saber Total)
+    proj_lookup_raw = csv_data.get("projections", {})
+    proj_lookup = build_canonical_lookup(proj_lookup_raw)
+    opener_lookup_raw = csv_data.get("opener_statuses", {})
+    opener_lookup = build_canonical_lookup(opener_lookup_raw)
+    csv_implied_lookup = csv_data["implied_totals"]
+    csv_game_total_lookup = csv_data["game_totals"]
     slate_teams_set = csv_data["slate_teams"]
 
-    # Fetch real vegas odds from Fantasy Labs (moneylines, O/U, spread)
-    fl_odds = await fetch_fantasylabs_odds(target_date=target_date)
-    # Build lookup: (away_team, home_team) -> odds dict
+    # If a specific slate is requested, scope slate_teams to only that slate's teams
+    if slate_id:
+        try:
+            d = date.fromisoformat(target_date) if target_date else date.today()
+            csv_slates = list_csv_slates(target_date=d, site=site)
+            for cs in csv_slates:
+                if cs["slate_id"] == slate_id and cs.get("csv_path"):
+                    slate_projs = load_csv_projections(cs["csv_path"], site)
+                    slate_teams_set = {p.get("team", "") for p in slate_projs if p.get("team")}
+                    break
+        except Exception:
+            pass
+
+    # Fetch ALL external data in parallel: lineups, vegas odds, and weather
+    # We know all potential home teams from CSV data, so weather can start immediately
+    async def _fetch_lineups_safe():
+        try:
+            return await fetch_lineups(force_refresh=force_refresh, target_date=target_date)
+        except Exception as exc:
+            logger.warning("GameCenter lineup fetch failed: %s", exc)
+            return []
+
+    async def _fetch_odds_safe():
+        try:
+            return await fetch_fantasylabs_odds(target_date=target_date)
+        except Exception as exc:
+            logger.warning("GameCenter odds fetch failed: %s", exc)
+            return []
+
+    async def _fetch_all_weather(home_teams: list):
+        tasks = {}
+        for ht in home_teams:
+            if ht not in tasks:
+                tasks[ht] = _get_game_weather(ht)
+        if not tasks:
+            return {}
+        results = await _aio.gather(*tasks.values(), return_exceptions=True)
+        cache = {}
+        for ht, result in zip(tasks.keys(), results):
+            cache[ht] = result if not isinstance(result, Exception) else WeatherOut()
+        return cache
+
+    # Pre-compute home teams from CSV data so weather starts immediately
+    known_home_teams = list(STADIUM_DATA.keys()) if not slate_teams_set else list(slate_teams_set)
+
+    # All three run concurrently — no sequential waits
+    games, fl_odds, weather_cache = await _aio.gather(
+        _fetch_lineups_safe(),
+        _fetch_odds_safe(),
+        _fetch_all_weather(known_home_teams),
+    )
+
+    # Build odds lookup
     odds_by_matchup: Dict[tuple, Dict[str, Any]] = {}
     for odds in fl_odds:
         key = (odds["away_team"], odds["home_team"])
         odds_by_matchup[key] = odds
-
-    # Fetch weather for each unique home team
-    weather_cache: Dict[str, WeatherOut] = {}
-    for game in games:
-        home_team = game.home.team
-        if home_team not in weather_cache:
-            weather_cache[home_team] = await _get_game_weather(home_team)
 
     results = []
     for game in games:
@@ -818,27 +890,50 @@ async def get_game_lineups(
         # Look up real vegas odds for this matchup
         matchup_odds = odds_by_matchup.get((away_team, home_team))
 
+        def _lookup_player(name):
+            cn = canonical_name(name)
+            sal = salary_lookup.get(cn)
+            pts = proj_lookup.get(cn)
+            opener_st = opener_lookup.get(cn)
+            if sal is None:
+                match = find_name_in_dict(name, salary_lookup_raw)
+                if match:
+                    sal = match[1]
+            if pts is None:
+                match = find_name_in_dict(name, proj_lookup_raw)
+                if match:
+                    pts = match[1]
+            if opener_st is None:
+                match = find_name_in_dict(name, opener_lookup_raw)
+                if match:
+                    opener_st = match[1]
+            return sal, pts, opener_st
+
         def _team_out(tl, is_home: bool):
             team = tl.team
             pitcher_out = None
             if tl.pitcher:
-                sal = salary_lookup.get(canonical_name(tl.pitcher.name))
+                sal, pts, opener_st = _lookup_player(tl.pitcher.name)
                 pitcher_out = PlayerLineupOut(
                     name=tl.pitcher.name,
                     position="P",
                     handedness=tl.pitcher.handedness,
                     salary=sal,
+                    median_pts=pts,
+                    opener_status=opener_st,
                 )
-            batters_out = [
-                PlayerLineupOut(
+            batters_out = []
+            for b in sorted(tl.batters, key=lambda x: x.batting_order or 99):
+                sal, pts, opener_st = _lookup_player(b.name)
+                batters_out.append(PlayerLineupOut(
                     name=b.name,
                     position=b.position,
                     batting_order=b.batting_order,
                     handedness=b.handedness,
-                    salary=salary_lookup.get(canonical_name(b.name)),
-                )
-                for b in sorted(tl.batters, key=lambda x: x.batting_order or 99)
-            ]
+                    salary=sal,
+                    median_pts=pts,
+                    opener_status=opener_st,
+                ))
 
             # If live data has no batters, fill from CSV projected batting orders
             if not batters_out and team in projected_by_team:
@@ -911,6 +1006,19 @@ async def get_game_lineups(
     return results
 
 
+class LiveGameState(BaseModel):
+    away_team: str
+    home_team: str
+    away_score: int = 0
+    home_score: int = 0
+    inning: int = 0
+    inning_half: str = ""
+    game_status: str = ""
+    game_pk: Optional[int] = None
+    game_time: str = ""
+    detailed_state: str = ""
+
+
 @router.get("/lineups/games/live", response_model=List[LiveGameState])
 async def get_live_game_scores():
     """Get live scores for today's MLB games from the MLB Stats API."""
@@ -921,7 +1029,7 @@ async def get_live_game_scores():
     params = {
         "sportId": 1,
         "date": date.today().isoformat(),
-        "hydrate": "linescore",
+        "hydrate": "linescore,team",
     }
 
     try:
@@ -942,11 +1050,16 @@ async def get_live_game_scores():
             home_abbr = home_team.get("abbreviation", "")
             away_abbr = away_team.get("abbreviation", "")
 
-            # Normalise abbreviations
+            if not home_abbr:
+                home_abbr = _abbr_from_name(home_team.get("name", ""))
+            if not away_abbr:
+                away_abbr = _abbr_from_name(away_team.get("name", ""))
+
             home_abbr = _normalise_team(home_abbr) if home_abbr else ""
             away_abbr = _normalise_team(away_abbr) if away_abbr else ""
 
             abstract_state = g.get("status", {}).get("abstractGameState", "")
+            detailed_state = g.get("status", {}).get("detailedState", "")
 
             linescore = g.get("linescore", {})
             inning = linescore.get("currentInning", 0) or 0
@@ -958,9 +1071,32 @@ async def get_live_game_scores():
             if abstract_state == "Final":
                 game_status = "Final"
             elif abstract_state == "Live":
-                game_status = "Live"
+                # MLB API returns abstractGameState "Live" for warmup/pre-game
+                # states too. Check detailedState to avoid showing "LIVE" before
+                # the game actually starts.
+                pre_game_states = (
+                    "warmup", "pre-game", "scheduled", "delayed start",
+                    "manager challenge",
+                )
+                if detailed_state.lower() in pre_game_states:
+                    game_status = "Preview"
+                else:
+                    game_status = "Live"
             else:
                 game_status = "Preview"
+
+            # Parse game start time
+            game_time = ""
+            game_date_str = g.get("gameDate", "")
+            if game_date_str:
+                try:
+                    dt = datetime.fromisoformat(game_date_str.replace("Z", "+00:00"))
+                    et = dt - timedelta(hours=4)
+                    hour = et.hour % 12 or 12
+                    ampm = "PM" if et.hour >= 12 else "AM"
+                    game_time = f"{hour}:{et.minute:02d} {ampm} ET"
+                except (ValueError, TypeError):
+                    pass
 
             results.append(LiveGameState(
                 away_team=away_abbr,
@@ -971,12 +1107,34 @@ async def get_live_game_scores():
                 inning_half=inning_half if game_status == "Live" else "",
                 game_status=game_status,
                 game_pk=g.get("gamePk"),
+                game_time=game_time,
+                detailed_state=detailed_state,
             ))
 
     return results
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
+
+
+_TEAM_NAME_TO_ABBR: Dict[str, str] = {
+    "Arizona Diamondbacks": "ARI", "Atlanta Braves": "ATL", "Baltimore Orioles": "BAL",
+    "Boston Red Sox": "BOS", "Chicago Cubs": "CHC", "Chicago White Sox": "CWS",
+    "Cincinnati Reds": "CIN", "Cleveland Guardians": "CLE", "Colorado Rockies": "COL",
+    "Detroit Tigers": "DET", "Houston Astros": "HOU", "Kansas City Royals": "KC",
+    "Los Angeles Angels": "LAA", "Los Angeles Dodgers": "LAD", "Miami Marlins": "MIA",
+    "Milwaukee Brewers": "MIL", "Minnesota Twins": "MIN", "New York Mets": "NYM",
+    "New York Yankees": "NYY", "Oakland Athletics": "OAK", "Athletics": "OAK",
+    "Philadelphia Phillies": "PHI", "Pittsburgh Pirates": "PIT", "San Diego Padres": "SD",
+    "San Francisco Giants": "SF", "Seattle Mariners": "SEA", "St. Louis Cardinals": "STL",
+    "Tampa Bay Rays": "TB", "Texas Rangers": "TEX", "Toronto Blue Jays": "TOR",
+    "Washington Nationals": "WSH",
+}
+
+
+def _abbr_from_name(full_name: str) -> str:
+    """Derive team abbreviation from full team name."""
+    return _TEAM_NAME_TO_ABBR.get(full_name, "")
 
 
 async def _save_slates_to_history(
@@ -1077,6 +1235,8 @@ def _build_projected_lineups_extended(
     """
     lineups: Dict[str, Dict[str, Any]] = {}
     salaries: Dict[str, int] = {}
+    projections_lookup: Dict[str, float] = {}
+    opener_lookup: Dict[str, str] = {}  # player_name -> "PO" or "PLR"
     implied_totals: Dict[str, float] = {}
     game_totals: Dict[str, float] = {}  # team -> game O/U
     slate_teams: set = set()
@@ -1085,22 +1245,28 @@ def _build_projected_lineups_extended(
         d = date.fromisoformat(target_date) if target_date else date.today()
         csv_slates = list_csv_slates(target_date=d, site=site)
         if not csv_slates:
-            return {"lineups": lineups, "salaries": salaries, "implied_totals": implied_totals, "game_totals": game_totals, "slate_teams": slate_teams}
+            return {"lineups": lineups, "salaries": salaries, "projections": projections_lookup, "opener_statuses": opener_lookup, "implied_totals": implied_totals, "game_totals": game_totals, "slate_teams": slate_teams}
         featured = identify_featured_csv_slate(csv_slates)
         if not featured or not featured.get("csv_path"):
-            return {"lineups": lineups, "salaries": salaries, "implied_totals": implied_totals, "game_totals": game_totals, "slate_teams": slate_teams}
+            return {"lineups": lineups, "salaries": salaries, "projections": projections_lookup, "opener_statuses": opener_lookup, "implied_totals": implied_totals, "game_totals": game_totals, "slate_teams": slate_teams}
         projections = load_csv_projections(featured["csv_path"], site)
     except Exception as exc:
         logger.warning("Failed to load CSV projections for GameCenter: %s", exc)
-        return {"lineups": lineups, "salaries": salaries, "implied_totals": implied_totals, "game_totals": game_totals, "slate_teams": slate_teams}
+        return {"lineups": lineups, "salaries": salaries, "projections": {}, "opener_statuses": opener_lookup, "implied_totals": implied_totals, "game_totals": game_totals, "slate_teams": slate_teams}
 
-    # Build salary lookup and collect slate teams
+    # Build salary + projection lookups and collect slate teams
     for p in projections:
         name = p.get("player_name", "")
         sal = p.get("salary")
         team = p.get("team", "")
+        med = p.get("median_pts")
         if name and sal:
             salaries[name] = sal
+        if name and med:
+            projections_lookup[name] = med
+        opener_st = p.get("opener_status")
+        if name and opener_st:
+            opener_lookup[name] = opener_st
         if team:
             slate_teams.add(team)
         # Capture team implied total (use first non-None per team)
@@ -1130,6 +1296,8 @@ def _build_projected_lineups_extended(
                         position="P",
                         handedness="",
                         salary=p.get("salary"),
+                        median_pts=p.get("median_pts"),
+                        opener_status=p.get("opener_status"),
                     )
             elif p.get("batting_order"):
                 batters.append(PlayerLineupOut(
@@ -1138,25 +1306,42 @@ def _build_projected_lineups_extended(
                     batting_order=p["batting_order"],
                     handedness="",
                     salary=p.get("salary"),
+                    median_pts=p.get("median_pts"),
+                    opener_status=p.get("opener_status"),
                 ))
         batters.sort(key=lambda b: b.batting_order or 99)
         lineups[team] = {"pitcher": pitcher, "batters": batters}
 
-    # Also load teams from all slates for slate filtering
+    # Also load teams and salaries from all slates for slate filtering
     for cs in csv_slates:
-        if cs.get("csv_path"):
+        if cs.get("csv_path") and cs["csv_path"] != featured.get("csv_path"):
             try:
                 all_projs = load_csv_projections(cs["csv_path"], site)
                 for p in all_projs:
                     t = p.get("team", "")
                     if t:
                         slate_teams.add(t)
+                    name = p.get("player_name", "")
+                    sal = p.get("salary")
+                    if name and sal and name not in salaries:
+                        salaries[name] = sal
             except Exception:
                 pass
+
+    # Merge DK salary CSV as fallback for players missing from SaberSim
+    try:
+        dk_sal = load_dk_salaries(target_date=d)
+        for name, info in dk_sal.items():
+            if name not in salaries:
+                salaries[name] = info["salary"]
+    except Exception as exc:
+        logger.warning("DK salary fallback load failed: %s", exc)
 
     return {
         "lineups": lineups,
         "salaries": salaries,
+        "projections": projections_lookup,
+        "opener_statuses": opener_lookup,
         "implied_totals": implied_totals,
         "game_totals": game_totals,
         "slate_teams": slate_teams,
@@ -1242,12 +1427,29 @@ async def _get_game_weather(home_team: str) -> WeatherOut:
     return result
 
 
+import time as _time
+
+_enriched_cache: Dict[str, tuple] = {}  # cache_key -> (timestamp, enriched_projections)
+_ENRICHED_CACHE_TTL = 60  # seconds
+
+
 async def _overlay_external_data(
     projections: List[Dict[str, Any]],
     target_date: Optional[str] = None,
+    cache_key: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Fetch lineup status and player props in parallel, then overlay onto projections."""
+    """Fetch lineup status and player props in parallel, then overlay onto projections.
+
+    Results are cached per cache_key (typically slate_id) for 60 seconds so
+    repeated page loads / tab switches don't re-fetch external APIs.
+    """
     import asyncio as _aio
+    import copy as _copy
+
+    if cache_key and cache_key in _enriched_cache:
+        ts, cached = _enriched_cache[cache_key]
+        if _time.time() - ts < _ENRICHED_CACHE_TTL:
+            return _copy.deepcopy(cached)
 
     async def _fetch_lineups():
         try:
@@ -1280,6 +1482,9 @@ async def _overlay_external_data(
                 p["hr_line"] = player_props.get("hr_line")
                 p["tb_line"] = player_props.get("tb_line")
                 p["hrr_line"] = player_props.get("hrr_line")
+
+    if cache_key:
+        _enriched_cache[cache_key] = (_time.time(), _copy.deepcopy(projections))
 
     return projections
 
@@ -1388,11 +1593,13 @@ def _sanitise_projection(p: Dict[str, Any]) -> Dict[str, Any]:
         "team": p.get("team", ""),
         "position": p.get("position", "UTIL"),
         "opp_team": p.get("opp_team"),
+        "is_home": p.get("is_home"),
         "game_pk": p.get("game_pk"),
         "venue": p.get("venue"),
         "salary": p.get("salary"),
         "batting_order": p.get("batting_order"),
         "is_pitcher": p.get("is_pitcher", False),
+        "is_bench": p.get("is_bench", False),
         "is_confirmed": p.get("is_confirmed", False),
         "floor_pts": p.get("floor_pts", 0.0),
         "median_pts": p.get("median_pts", 0.0),
@@ -1410,6 +1617,12 @@ def _sanitise_projection(p: Dict[str, Any]) -> Dict[str, Any]:
         "min_exposure": p.get("min_exposure"),
         "max_exposure": p.get("max_exposure"),
         "lineup_status": p.get("lineup_status", "unknown"),
+        "opener_status": p.get("opener_status"),
+        "is_projected_starter": p.get("is_projected_starter"),
+        "rp_role": p.get("rp_role"),
+        "appearance_rate": p.get("appearance_rate"),
+        "expected_ip": p.get("expected_ip"),
+        "recent_usage_penalty": p.get("recent_usage_penalty"),
         "k_line": p.get("k_line"),
         "hr_line": p.get("hr_line"),
         "tb_line": p.get("tb_line"),
