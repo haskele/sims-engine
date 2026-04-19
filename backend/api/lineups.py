@@ -434,6 +434,171 @@ async def optimize_lineups_csv(body: CSVOptimizeRequest):
     return OptimizeResult(lineups=enriched, count=len(enriched))
 
 
+@router.post("/optimize-staging", response_model=OptimizeResult)
+async def optimize_lineups_staging(body: CSVOptimizeRequest):
+    """Generate optimised lineups from the staging projection pipeline.
+
+    Uses the sim-engine projection cache instead of CSV files. Same optimizer
+    logic as optimize-csv but fed by the home-grown projection model.
+    """
+    import time as _time
+    from api.staging_projections import _projection_cache, get_slate_staging_projections
+    from api.projections import _sanitise_projection
+
+    try:
+        d = date.fromisoformat(body.target_date) if body.target_date else date.today()
+    except ValueError:
+        raise HTTPException(400, "Invalid date format, use YYYY-MM-DD")
+
+    date_str = d.isoformat()
+    cache_key = f"{date_str}-{body.site}"
+
+    # Get projections: try per-slate if slate_id provided, else use cached full-day
+    projections: list[dict] = []
+    if body.slate_id:
+        from fastapi import Request
+        from api.staging_projections import get_slate_staging_projections
+        from starlette.datastructures import QueryParams
+        try:
+            result = await get_slate_staging_projections(
+                slate_id=body.slate_id,
+                site=body.site,
+                target_date=body.target_date,
+                n_sims=1000,
+            )
+            projections = [p.dict() for p in result]
+        except Exception as exc:
+            logger.warning("Failed to get slate projections for optimizer: %s", exc)
+
+    if not projections:
+        # Fall back to full-day cache
+        if cache_key in _projection_cache:
+            ts, cached = _projection_cache[cache_key]
+            if _time.time() - ts < 600:
+                projections = [_sanitise_projection(p) for p in cached]
+
+    if not projections:
+        # Try generating fresh
+        from services.projection_pipeline import generate_projections
+        try:
+            raw = await generate_projections(target_date=date_str, site=body.site, n_sims=1000)
+            _projection_cache[cache_key] = (_time.time(), raw)
+            projections = [_sanitise_projection(p) for p in raw]
+        except Exception as exc:
+            raise HTTPException(500, f"Projection pipeline failed: {exc}")
+
+    if not projections:
+        raise HTTPException(400, "No projections available for this date/site")
+
+    # Build player pool (same logic as optimize-csv)
+    pool_data: list[dict[str, Any]] = []
+    name_to_id: dict[str, int] = {}
+
+    for i, p in enumerate(projections):
+        pid = i + 1
+        name = p.get("player_name", "")
+        if not name:
+            continue
+        name_to_id[name] = pid
+
+        salary = p.get("salary") or 0
+        if salary <= 0:
+            continue
+
+        raw_pos = p.get("position", "UTIL")
+        if p.get("is_pitcher"):
+            opt_pos = "P"
+        else:
+            parts = raw_pos.split("/")
+            mapped = []
+            for pp in parts:
+                if pp in ("LF", "CF", "RF"):
+                    if "OF" not in mapped:
+                        mapped.append("OF")
+                else:
+                    mapped.append(pp)
+            opt_pos = "/".join(mapped) if mapped else raw_pos
+
+        pool_data.append({
+            "id": pid,
+            "name": name,
+            "team": p.get("team", ""),
+            "position": opt_pos,
+            "salary": salary,
+            "floor_pts": p.get("floor_pts", 0),
+            "median_pts": p.get("median_pts", 0),
+            "ceiling_pts": p.get("ceiling_pts", 0),
+            "ownership": p.get("projected_ownership", 0) or 0,
+            "dk_id": p.get("dk_id"),
+        })
+
+    if not pool_data:
+        raise HTTPException(400, "No players with salary data in projection set")
+
+    pool = PlayerPool(pool_data)
+
+    exposure: dict[int, tuple[float, float]] = {}
+    for p in projections:
+        pid = name_to_id.get(p.get("player_name", ""))
+        if pid is None:
+            continue
+        min_exp = (p.get("min_exposure") or 0) / 100.0
+        max_exp = (p.get("max_exposure") or 100) / 100.0
+        if min_exp > 0 or max_exp < 1.0:
+            exposure[pid] = (min_exp, max_exp)
+
+    for name, bounds in body.exposure_overrides.items():
+        pid = name_to_id.get(name)
+        if pid and len(bounds) == 2:
+            exposure[pid] = (bounds[0] / 100.0, bounds[1] / 100.0)
+
+    locked = [name_to_id[n] for n in body.locked_names if n in name_to_id]
+    excluded = [name_to_id[n] for n in body.excluded_names if n in name_to_id]
+
+    valid_skews = ("neutral", "ceiling", "floor")
+    skew = body.skew if body.skew in valid_skews else "neutral"
+    variance = max(0.0, min(1.0, body.variance))
+
+    stack_exposures: Dict[str, Dict[int, tuple]] = {}
+    for team, config in body.stack_exposures.items():
+        team_stacks: Dict[int, tuple] = {}
+        for sz, se in [(3, config.stack_3), (4, config.stack_4), (5, config.stack_5)]:
+            if se:
+                team_stacks[sz] = (se.min_pct / 100.0, se.max_pct / 100.0)
+        if team_stacks:
+            stack_exposures[team] = team_stacks
+
+    n = body.validated_n_lineups()
+    lineups = await asyncio.to_thread(
+        generate_lineup_pool,
+        pool=pool,
+        n_lineups=n,
+        site=body.site,
+        objective=body.objective,
+        min_unique=body.min_unique,
+        exposure_limits=exposure if exposure else None,
+        stack_rules=None,
+        locked=locked if locked else None,
+        excluded=excluded if excluded else None,
+        variance=variance,
+        skew=skew,
+        stack_exposures=stack_exposures if stack_exposures else None,
+        min_salary=body.min_salary,
+    )
+
+    id_to_data = {p["id"]: p for p in pool_data}
+    enriched = []
+    for lu in lineups:
+        enriched_lu = []
+        for slot in lu:
+            pdata = id_to_data.get(slot["player_id"], {})
+            slot["dk_id"] = pdata.get("dk_id")
+            enriched_lu.append(slot)
+        enriched.append(enriched_lu)
+
+    return OptimizeResult(lineups=enriched, count=len(enriched))
+
+
 @router.post("/late-swap", response_model=LateSwapResponse)
 async def check_late_swap(body: LateSwapRequest):
     """Check a lineup for scratched players and suggest optimal replacements.
@@ -447,18 +612,28 @@ async def check_late_swap(body: LateSwapRequest):
     except ValueError:
         raise HTTPException(400, "Invalid date format, use YYYY-MM-DD")
 
-    # Load CSV projections
+    # Load projections: try CSV first, fall back to staging cache
+    projections: list[dict] = []
     csv_slates = list_csv_slates(target_date=d, site=body.site)
-    if not csv_slates:
-        raise HTTPException(400, "No CSV projection files found for this date/site")
+    if csv_slates:
+        featured = identify_featured_csv_slate(csv_slates)
+        if featured and featured.get("csv_path"):
+            projections = load_csv_projections(featured["csv_path"], body.site)
 
-    featured = identify_featured_csv_slate(csv_slates)
-    if not featured or not featured.get("csv_path"):
-        raise HTTPException(400, "No featured slate found")
-
-    projections = load_csv_projections(featured["csv_path"], body.site)
     if not projections:
-        raise HTTPException(400, "No projections loaded from CSV")
+        import time as _time
+        from api.staging_projections import _projection_cache
+        from api.projections import _sanitise_projection
+
+        date_str = d.isoformat()
+        cache_key = f"{date_str}-{body.site}"
+        if cache_key in _projection_cache:
+            ts, cached = _projection_cache[cache_key]
+            if _time.time() - ts < 600:
+                projections = [_sanitise_projection(p) for p in cached]
+
+    if not projections:
+        raise HTTPException(400, "No projections available for this date/site")
 
     # Build lookup: player_name (lowercase) -> projection dict
     proj_by_name: Dict[str, Dict[str, Any]] = {}

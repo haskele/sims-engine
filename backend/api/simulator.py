@@ -103,12 +103,15 @@ class UpdateEntryLineupRequest(BaseModel):
 
 
 def _load_player_pool(site: str, slate_id: Optional[str] = None, target_date: Optional[str] = None):
-    """Load player pool from CSV projections."""
+    """Load player pool from CSV projections, falling back to staging cache."""
+    import time as _time
+
     try:
         d = date.fromisoformat(target_date) if target_date else None
     except ValueError:
         d = None
 
+    # Try CSV projections first
     slates = list_available_slates(site=site, target_date=d)
     csv_path = None
 
@@ -123,25 +126,53 @@ def _load_player_pool(site: str, slate_id: Optional[str] = None, target_date: Op
         if featured:
             csv_path = featured["csv_path"]
 
-    if not csv_path:
-        return [], None
+    if csv_path:
+        raw_projections = load_csv_projections(csv_path, site)
+        player_pool = []
+        for i, p in enumerate(raw_projections):
+            player_pool.append({
+                "id": i + 1,
+                "name": p["player_name"],
+                "team": p["team"],
+                "position": p["position"],
+                "salary": p.get("salary", 3000),
+                "floor_pts": p.get("floor_pts", 0),
+                "median_pts": p.get("median_pts", 0),
+                "ceiling_pts": p.get("ceiling_pts", 0),
+                "projected_ownership": p.get("projected_ownership", 5.0),
+            })
+        return player_pool, csv_path
 
-    raw_projections = load_csv_projections(csv_path, site)
-    player_pool = []
-    for i, p in enumerate(raw_projections):
-        player_pool.append({
-            "id": i + 1,
-            "name": p["player_name"],
-            "team": p["team"],
-            "position": p["position"],
-            "salary": p.get("salary", 3000),
-            "floor_pts": p.get("floor_pts", 0),
-            "median_pts": p.get("median_pts", 0),
-            "ceiling_pts": p.get("ceiling_pts", 0),
-            "projected_ownership": p.get("projected_ownership", 5.0),
-        })
+    # Fall back to staging projection cache
+    from api.staging_projections import _projection_cache
+    from api.projections import _sanitise_projection
 
-    return player_pool, csv_path
+    date_str = (d or date.today()).isoformat()
+    cache_key = f"{date_str}-{site}"
+    if cache_key in _projection_cache:
+        ts, cached = _projection_cache[cache_key]
+        if _time.time() - ts < 600:
+            raw_projections = [_sanitise_projection(p) for p in cached]
+            player_pool = []
+            for i, p in enumerate(raw_projections):
+                salary = p.get("salary") or 0
+                if salary <= 0:
+                    continue
+                player_pool.append({
+                    "id": i + 1,
+                    "name": p.get("player_name", ""),
+                    "team": p.get("team", ""),
+                    "position": p.get("position", "UTIL"),
+                    "salary": salary,
+                    "floor_pts": p.get("floor_pts", 0),
+                    "median_pts": p.get("median_pts", 0),
+                    "ceiling_pts": p.get("ceiling_pts", 0),
+                    "projected_ownership": p.get("projected_ownership", 5.0) or 5.0,
+                })
+            if player_pool:
+                return player_pool, f"staging-cache:{cache_key}"
+
+    return [], None
 
 
 def _resolve_lineups(user_lineups, name_to_id, player_pool=None):

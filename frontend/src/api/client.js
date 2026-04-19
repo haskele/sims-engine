@@ -84,7 +84,12 @@ export const api = {
 
   // Lineups
   buildLineups: (config, signal) => fetchApi('/lineups/optimize', { method: 'POST', body: JSON.stringify(config), signal, timeout: LONG_TIMEOUT }),
-  buildLineupsCSV: (config, signal) => fetchApi('/lineups/optimize-csv', { method: 'POST', body: JSON.stringify(config), signal, timeout: LONG_TIMEOUT }),
+  buildLineupsCSV: (config, signal) => {
+    const endpoint = import.meta.env.VITE_USE_STAGING === 'true'
+      ? '/lineups/optimize-staging'
+      : '/lineups/optimize-csv';
+    return fetchApi(endpoint, { method: 'POST', body: JSON.stringify(config), signal, timeout: LONG_TIMEOUT });
+  },
   exportLineups: (lineupIds, site) => fetchApi(`/lineups/export/dk`, { method: 'GET' }),
 
   // Simulator
