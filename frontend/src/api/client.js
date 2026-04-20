@@ -2,9 +2,7 @@ const BASE_URL = import.meta.env.PROD
   ? 'https://baseball-dfs-sims.fly.dev'
   : '/api';
 
-const PROJ_PREFIX = import.meta.env.VITE_USE_STAGING === 'true'
-  ? '/staging/projections'
-  : '/projections';
+const PROJ_PREFIX = '/staging/projections';
 
 const DEFAULT_TIMEOUT = 30000;
 const LONG_TIMEOUT = 300000;
@@ -85,10 +83,7 @@ export const api = {
   // Lineups
   buildLineups: (config, signal) => fetchApi('/lineups/optimize', { method: 'POST', body: JSON.stringify(config), signal, timeout: LONG_TIMEOUT }),
   buildLineupsCSV: (config, signal) => {
-    const endpoint = import.meta.env.VITE_USE_STAGING === 'true'
-      ? '/lineups/optimize-staging'
-      : '/lineups/optimize-csv';
-    return fetchApi(endpoint, { method: 'POST', body: JSON.stringify(config), signal, timeout: LONG_TIMEOUT });
+    return fetchApi('/lineups/optimize-staging', { method: 'POST', body: JSON.stringify(config), signal, timeout: LONG_TIMEOUT });
   },
   exportLineups: (lineupIds, site) => fetchApi(`/lineups/export/dk`, { method: 'GET' }),
 
